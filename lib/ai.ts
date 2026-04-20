@@ -711,7 +711,7 @@ export type RouteDecision =
  * still goes through the LLM router.
  */
 const GENERATE_TRIGGER_RE =
-  /(?:\b(?:create|draft|generate|make|write|prepare|build|produce)\b[\s\S]{0,40}\b(?:contract|lease|agreement|rental(?:\s+agreement)?|sublet)\b)|(?:\b(?:создай|составь|подготовь|напиши)\b[\s\S]{0,40}\b(?:договор|аренд))|(?:(?:צור|תנסח|תכין|הכן|תכתוב|נסח)[\s\S]{0,40}(?:חוזה|הסכם|שכירות|חוזי))|(?:(?:أنشئ|اصنع|اكتب|حضّر|أعدّ)[\s\S]{0,40}(?:عقد|إيجار|اتفاقية))/iu;
+  /(?:\b(?:create|draft|generate|make|write|prepare|build|produce|help\s+me\s+(?:create|draft|write|prepare|make))\b[\s\S]{0,40}\b(?:contract|lease|agreement|rental(?:\s+agreement)?|sublet)\b)|(?:\b(?:создай|составь|подготовь|напиши|помоги\s+(?:составить|написать))\b[\s\S]{0,40}\b(?:договор|аренд))|(?:(?:צור|תנסח|לנסח|נסח|תכין|להכין|הכן|תכתוב|לכתוב|כתוב|תעזור\s+לי\s+(?:לנסח|לכתוב|להכין))[\s\S]{0,40}(?:חוזה|הסכם|שכירות|חוזי))|(?:(?:أنشئ|اصنع|اكتب|حضّر|أعدّ|ساعدني\s+في\s+(?:صياغة|كتابة|إعداد))[\s\S]{0,40}(?:عقد|إيجار|اتفاقية))/iu;
 
 function defaultsForUiLang(uiLang: string): {
   jurisdiction: string;
@@ -731,8 +731,16 @@ export async function routeChatTurn(
   message: string,
   uiLanguageHint: string,
 ): Promise<RouteDecision> {
+  const fastPathHit = GENERATE_TRIGGER_RE.test(message);
+  // dev visibility — visible in `npm run dev` terminal, not in production logs
+  if (process.env.NODE_ENV !== "production") {
+    console.log(
+      `[router] msg=${JSON.stringify(message.slice(0, 80))} fastPath=${fastPathHit} uiHint=${uiLanguageHint}`,
+    );
+  }
+
   // ---- regex fast-path ----
-  if (GENERATE_TRIGGER_RE.test(message)) {
+  if (fastPathHit) {
     const def = defaultsForUiLang(uiLanguageHint);
     const lower = message.toLowerCase();
     const type: ContractType =
@@ -780,7 +788,13 @@ export async function routeChatTurn(
   }
 
   if (validated.data.intent === "chat" || !validated.data.generate) {
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[router] LLM decided: chat`);
+    }
     return { intent: "chat", usage: extractUsage(res, durationMs) };
+  }
+  if (process.env.NODE_ENV !== "production") {
+    console.log(`[router] LLM decided: generate_contract jurisdiction=${validated.data.generate.jurisdiction}`);
   }
 
   const g = validated.data.generate;
