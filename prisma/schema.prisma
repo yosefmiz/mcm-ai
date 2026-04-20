@@ -1,0 +1,62 @@
+// MyHome — Real-estate contract generator
+// Sections live in JSONB on Contract for atomic full-doc reads and partial PATCH updates.
+// LegalConstraint is the global rules engine: filtered by jurisdiction (+ optional type/language)
+// and injected into every prompt so generation AND edits stay lawful.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum ContractType {
+  ANNUAL
+  SUBLET
+  MANAGEMENT
+}
+
+enum Language {
+  HE
+  EN
+  RU
+  AR
+}
+
+model Contract {
+  id           String       @id @default(cuid())
+  jurisdiction String
+  language     Language
+  type         ContractType
+
+  metadata     Json
+  sections     Json
+
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([jurisdiction, type])
+  @@index([language])
+}
+
+model LegalConstraint {
+  id           String        @id @default(cuid())
+  jurisdiction String
+  language     Language?
+  type         ContractType?
+
+  category     String
+  rule         String
+  citation     String?
+  priority     Int           @default(0)
+  isActive     Boolean       @default(true)
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([jurisdiction, type, isActive])
+  @@index([category])
+}
