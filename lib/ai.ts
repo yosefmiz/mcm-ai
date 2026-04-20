@@ -10,25 +10,31 @@ import {
 import {
   SYSTEM_GENERATE,
   SYSTEM_EDIT,
+  SYSTEM_EXTRACT,
   buildGeneratePrompt,
   buildEditPrompt,
+  buildExtractPrompt,
   type ConstraintRow,
+  type TemplateRef,
 } from "./prompts";
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "gemma4";
+const OLLAMA_CTX = Number(process.env.OLLAMA_NUM_CTX ?? 16384);
 
 const jsonModel = new ChatOllama({
   baseUrl: OLLAMA_URL,
   model: OLLAMA_MODEL,
   temperature: 0.2,
   format: "json",
+  numCtx: OLLAMA_CTX,
 });
 
 const textModel = new ChatOllama({
   baseUrl: OLLAMA_URL,
   model: OLLAMA_MODEL,
   temperature: 0.15,
+  numCtx: OLLAMA_CTX,
 });
 
 // ---------------------------------------------------------------------------
@@ -92,12 +98,10 @@ export interface GenerateInput {
 export async function generateInitialContract(
   input: GenerateInput,
 ): Promise<GenerationResult> {
-  const constraints = await fetchConstraints(
-    input.prisma,
-    input.jurisdiction,
-    input.type,
-    input.language,
-  );
+  const [constraints, templates] = await Promise.all([
+    fetchConstraints(input.prisma, input.jurisdiction, input.type, input.language),
+    fetchExemplarTemplates(input.prisma, input.jurisdiction, input.type, input.language),
+  ]);
 
   const userPrompt = buildGeneratePrompt({
     jurisdiction: input.jurisdiction,
@@ -105,6 +109,7 @@ export async function generateInitialContract(
     type: input.type,
     inputs: input.inputs,
     constraints,
+    templates,
   });
 
   const startedAt = Date.now();
@@ -204,6 +209,112 @@ export async function editContractSection(input: EditInput): Promise<EditResult>
 }
 
 // ---------------------------------------------------------------------------
+// Template extraction (raw text → structured ContractDocument)
+// ---------------------------------------------------------------------------
+
+export interface ExtractInput {
+  jurisdiction: string;
+  language: Language;
+  type: ContractType;
+  rawText: string;
+}
+
+export async function extractTemplate(input: ExtractInput): Promise<ContractDocument> {
+  const userPrompt = buildExtractPrompt(input);
+  const res = await jsonModel.invoke([
+    new SystemMessage(SYSTEM_EXTRACT),
+    new HumanMessage(userPrompt),
+  ]);
+  const raw = messageContentToString(res.content);
+  const cleaned = stripJsonFences(raw);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (e) {
+    throw new Error(
+      `Extractor returned non-JSON: ${(e as Error).message}\n--- raw ---\n${raw.slice(0, 500)}`,
+    );
+  }
+
+  if (parsed && typeof parsed === "object") {
+    const obj = parsed as Record<string, unknown>;
+    obj.metadata = {
+      jurisdiction: input.jurisdiction,
+      language: input.language,
+      type: input.type,
+    };
+
+    // Drop incomplete sections — extractor sometimes emits stubs with empty
+    // content for headings it couldn't fill. Validating those would fail the
+    // whole document; pruning them lets imperfect extractions still land.
+    if (Array.isArray(obj.sections)) {
+      obj.sections = obj.sections.filter((s) => {
+        if (!s || typeof s !== "object") return false;
+        const sec = s as Record<string, unknown>;
+        return (
+          typeof sec.id === "string" &&
+          sec.id.length > 0 &&
+          typeof sec.title === "string" &&
+          sec.title.length > 0 &&
+          typeof sec.content === "string" &&
+          sec.content.trim().length > 0
+        );
+      });
+    }
+  }
+
+  const validated = ContractDocumentSchema.safeParse(parsed);
+  if (!validated.success) {
+    throw new Error(
+      `Extractor output failed validation: ${validated.error.message}`,
+    );
+  }
+  return validated.data;
+}
+
+// ---------------------------------------------------------------------------
+// Exemplar template loader (random sample for prompt injection)
+// ---------------------------------------------------------------------------
+
+const TEMPLATE_INJECTION_COUNT = Number(process.env.TEMPLATE_INJECTION_COUNT ?? 3);
+
+export async function fetchExemplarTemplates(
+  prisma: PrismaClient,
+  jurisdiction: string,
+  type: ContractType,
+  language: Language,
+): Promise<TemplateRef[]> {
+  const all = await prisma.contractTemplate.findMany({
+    where: { isActive: true, jurisdiction, type, language },
+    orderBy: { priority: "desc" },
+    select: { title: true, sections: true },
+  });
+  if (all.length === 0) return [];
+
+  const picked = all.length <= TEMPLATE_INJECTION_COUNT
+    ? all
+    : sampleN(all, TEMPLATE_INJECTION_COUNT);
+
+  return picked
+    .map((row) => {
+      const parsed = ContractDocumentSchema.shape.sections.safeParse(row.sections);
+      if (!parsed.success) return null;
+      return { title: row.title, sections: parsed.data };
+    })
+    .filter((t): t is TemplateRef => t !== null);
+}
+
+function sampleN<T>(arr: T[], n: number): T[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a.slice(0, n);
+}
+
+// ---------------------------------------------------------------------------
 // Chat (free-form Q&A about real estate / contracts)
 // ---------------------------------------------------------------------------
 
@@ -290,6 +401,20 @@ function extractUsage(res: AIMessage, durationMs: number): UsageInfo {
     totalTokens: total,
     durationMs,
   };
+}
+
+function stripJsonFences(text: string): string {
+  let out = text.trim();
+  // strip ```json or ``` opening fence
+  out = out.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, "");
+  out = out.replace(/\n?```\s*$/, "");
+  // if model added a leading prose line before the JSON, find first { or [
+  const firstBrace = out.search(/[{[]/);
+  if (firstBrace > 0) out = out.slice(firstBrace);
+  // trim trailing prose after the last closing brace
+  const lastBrace = Math.max(out.lastIndexOf("}"), out.lastIndexOf("]"));
+  if (lastBrace >= 0 && lastBrace < out.length - 1) out = out.slice(0, lastBrace + 1);
+  return out.trim();
 }
 
 function sanitizeEditOutput(text: string): string {

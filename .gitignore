@@ -5,3 +5,8 @@ out
 .env.local
 *.tsbuildinfo
 next-env.d.ts
+
+# Private contract corpus (real legal docs)
+/data/contracts/**
+!/data/contracts/.gitkeep
+!/data/contracts/README.md

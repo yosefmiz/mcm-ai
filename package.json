@@ -12,7 +12,8 @@
     "start": "next start",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "ingest:templates": "tsx scripts/ingest-templates.ts"
   },
   "keywords": [],
   "author": "",
@@ -23,7 +24,9 @@
     "@langchain/ollama": "^1.2.6",
     "@prisma/client": "^6.19.3",
     "langchain": "^1.3.3",
+    "mammoth": "^1.12.0",
     "next": "^16.2.4",
+    "pdf-parse": "^2.4.5",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "zod": "^4.3.6"
@@ -33,6 +36,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "prisma": "^6.19.3",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.3"
   }
 }

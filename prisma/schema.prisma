@@ -50,6 +50,27 @@ model Contract {
   @@index([language])
 }
 
+model ContractTemplate {
+  id           String       @id @default(cuid())
+
+  jurisdiction String
+  language     Language
+  type         ContractType
+
+  title        String
+  source       String       @unique     // file path or URI; dedupes ingest
+  rawText      String       @db.Text    // original extracted text
+  sections     Json                       // structured per ContractDocumentSchema
+
+  isActive     Boolean      @default(true)
+  priority     Int          @default(0)
+
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([jurisdiction, type, language, isActive])
+}
+
 model UsageLog {
   id           String       @id @default(cuid())
 

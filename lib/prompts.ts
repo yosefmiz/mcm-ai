@@ -28,7 +28,12 @@ export function buildGeneratePrompt(args: {
   type: ContractType;
   inputs: Record<string, unknown>;
   constraints: ConstraintRow[];
+  templates?: TemplateRef[];
 }): string {
+  const templatesBlock = args.templates && args.templates.length > 0
+    ? `\nREFERENCE TEMPLATES (model your structure and tone on these — do NOT copy verbatim, adapt to the user's specifics):\n${formatTemplatesBlock(args.templates)}\n`
+    : "";
+
   return `Draft a ${args.type} real-estate contract.
 
 JURISDICTION: ${args.jurisdiction}
@@ -36,7 +41,7 @@ LANGUAGE: ${args.language}
 
 USER INPUTS (JSON):
 ${JSON.stringify(args.inputs, null, 2)}
-
+${templatesBlock}
 LEGAL CONSTRAINTS (binding):
 ${formatConstraints(args.constraints)}
 
@@ -63,6 +68,64 @@ Output rules — non-negotiable:
 - Preserve the original LANGUAGE and natural writing direction (RTL for HE/AR, LTR for EN/RU).
 - Keep the clause fully compliant with every supplied LEGAL CONSTRAINT. If the user instruction conflicts with a constraint, follow the constraint and emit the lawful version.
 - If the instruction is ambiguous, choose the most legally conservative interpretation. Do not invent facts not present in the original clause or the instruction.`;
+
+// ---------------------------------------------------------------------------
+// Template extraction (raw contract text → structured sections)
+// ---------------------------------------------------------------------------
+
+export const SYSTEM_EXTRACT = `You are a legal document parser.
+Given the full text of a real-estate contract, you split it into clean labeled sections.
+You ONLY emit a single JSON object — no prose, no markdown, no commentary.
+Preserve the original wording verbatim where possible; only normalize whitespace.
+Write each section's "title" in the same language as the source contract.
+If a standard section is not present in the source, omit it entirely — do not invent.`;
+
+export function buildExtractPrompt(args: {
+  jurisdiction: string;
+  language: Language;
+  type: ContractType;
+  rawText: string;
+}): string {
+  return `Parse the following ${args.language} ${args.type} real-estate contract from ${args.jurisdiction} into structured sections.
+
+Return JSON with EXACTLY this shape:
+{
+  "metadata": { "jurisdiction": "${args.jurisdiction}", "language": "${args.language}", "type": "${args.type}" },
+  "sections": [
+    { "id": "<snake_case_id>", "title": "<localized title from source>", "content": "<verbatim clause text>" }
+  ]
+}
+
+Use these stable section ids when the corresponding content exists in the source:
+header, parties, property, term, payment, deposit, utilities, maintenance, termination, governing_law, signatures.
+Add additional snake_case sections for anything else present in the source (e.g. "guarantor", "indexation", "early_termination", "late_fees").
+
+CONTRACT TEXT:
+"""
+${args.rawText}
+"""`;
+}
+
+// ---------------------------------------------------------------------------
+// Reference-template injection block (used inside buildGeneratePrompt)
+// ---------------------------------------------------------------------------
+
+export interface TemplateRef {
+  title: string;
+  sections: { id: string; title: string; content: string }[];
+}
+
+export function formatTemplatesBlock(refs: TemplateRef[]): string {
+  if (refs.length === 0) return "(none on file)";
+  return refs
+    .map((ref, i) => {
+      const body = ref.sections
+        .map((s) => `  [${s.id}] ${s.title}\n  ${s.content.replace(/\n/g, "\n  ")}`)
+        .join("\n");
+      return `--- REFERENCE ${i + 1}: ${ref.title} ---\n${body}`;
+    })
+    .join("\n\n");
+}
 
 export function buildEditPrompt(args: {
   language: Language;
