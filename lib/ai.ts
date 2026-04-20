@@ -40,7 +40,7 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "gemma4";
 const OLLAMA_CTX = Number(process.env.OLLAMA_NUM_CTX ?? 16384);
 // Hard cap on output tokens so a runaway model doesn't fill the entire
 // context window with looped JSON.
-const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT ?? 6000);
+const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT ?? 10000);
 // 99 = "all layers on GPU". Ollama's auto-detection is conservative and
 // often leaves 30-60% of the model on CPU even when VRAM is available;
 // forcing this lets the 3080 actually do its job. Override via env if you

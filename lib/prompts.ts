@@ -61,7 +61,7 @@ const formatGlossary = (rows: GlossaryRow[]): string =>
  * Override per-section budget via TEMPLATE_SECTION_CHAR_BUDGET env var.
  */
 const TEMPLATE_SECTION_CHAR_BUDGET = Number(
-  process.env.TEMPLATE_SECTION_CHAR_BUDGET ?? 500,
+  process.env.TEMPLATE_SECTION_CHAR_BUDGET ?? 1500,
 );
 
 function snipForTemplate(text: string): string {
@@ -147,7 +147,32 @@ Translation into other languages is performed later by a separate step.
   "[insert name]" or "_____" — only the [[FIELD_NAME]] form is allowed.
 - The surrounding clause text is still written in full natural legal
   language; the placeholder simply stands in for the unknown atom.
-</completeness_and_placeholders>`;
+</completeness_and_placeholders>
+
+<depth_requirements>
+- A real residential lease is a 4-8 page document with substantive,
+  enforceable clauses — NOT a checklist or a sketch. Match that depth.
+- Every section's "content" MUST be a fully-drafted clause body. Aim for
+  150-400 words per section in the jurisdiction_language; longer is fine
+  if the topic warrants it. Single-sentence or 2-3 bullet-point answers
+  are NOT acceptable.
+- Cover all standard scenarios within each clause: define obligations,
+  exceptions, remedies, deadlines, notice procedures, default consequences,
+  and the relevant references to local law. Use sub-numbering
+  (1.1, 1.2 ...) when the clause has multiple obligations.
+- Examples of REQUIRED depth:
+  - "utilities" enumerates each utility (water, electricity, gas, internet,
+    municipal tax / arnona, common expenses / va'ad bayit), states who pays
+    each, who is the account holder, deadlines, and consequence of non-pay.
+  - "termination" defines lawful grounds, notice period, the cure period,
+    eviction process, post-termination obligations, return of deposit
+    timeline, and the governing statute.
+  - "maintenance" splits ordinary wear (tenant) vs structural / appliance
+    failure (landlord), notification process, response timelines, and
+    self-help right with offset.
+- Reference templates show the local style and depth — model your length
+  on theirs.
+</depth_requirements>`;
 
 export interface BuildGenerateArgs {
   jurisdiction: string;
