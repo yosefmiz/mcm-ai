@@ -100,6 +100,22 @@ Translation into other languages is performed later by a separate step.
   <language_waiver_requirements>.
 </output_rules>
 
+<deal_facts_rules>
+- The <deal_facts> block contains GROUND TRUTH from the database: the
+  parties' real names, ID numbers, the property address, the agreed rent
+  and dates. You MUST use these values verbatim wherever they apply in the
+  contract.
+- NEVER invent, paraphrase, or substitute different values for any fact
+  appearing in <deal_facts>. Names, numbers, dates, and addresses are
+  copied as written.
+- For any specific atom NOT present in <deal_facts> (and not present in
+  <inputs>), insert a placeholder in the form [[FIELD_NAME]] using
+  SCREAMING_SNAKE_CASE in English. Never fabricate a value to fill a gap.
+- If <deal_facts> is empty (the route did not load any CRM entities),
+  treat <inputs> as the only source of truth and placeholder everything
+  else.
+</deal_facts_rules>
+
 <completeness_and_placeholders>
 - Always produce the FULL contract with every standard clause fully drafted,
   even when <inputs> is sparse. Do NOT shorten the document or omit clauses
@@ -130,6 +146,8 @@ export interface BuildGenerateArgs {
   constraints: ConstraintRow[];
   glossary: GlossaryRow[];
   templates: TemplateRef[];
+  /** Plain-text Fact Sheet from lib/context-builder. Empty string is fine. */
+  dealFacts?: string;
 }
 
 export function buildGeneratePrompt(args: BuildGenerateArgs): string {
@@ -140,6 +158,10 @@ export function buildGeneratePrompt(args: BuildGenerateArgs): string {
 <jurisdiction_language>${args.jurisdictionLanguage}</jurisdiction_language>
 <bridge_language>${args.bridgeLanguage}</bridge_language>
 <ui_language>${args.uiLanguage}</ui_language>
+
+<deal_facts>
+${cdata(args.dealFacts && args.dealFacts.trim().length > 0 ? args.dealFacts : "(no CRM entities resolved — rely on <inputs> only)")}
+</deal_facts>
 
 <inputs>
 ${cdata(JSON.stringify(args.inputs, null, 2))}
@@ -225,12 +247,22 @@ Translation to other languages is performed later by a separate step.
 - The <user_instruction> may be written in any language (often the
   ui_language). Understand its intent and apply it.
 - Hebrew/Arabic are written right-to-left without bidi marks.
-- Do not invent facts not present in the current clause or the instruction.
+- Do not invent facts not present in <deal_facts>, the current clause, or
+  the instruction.
 - Preserve any [[FIELD_NAME]] placeholders already present in the current
-  clause unless the <user_instruction> explicitly supplies a value for them.
+  clause unless the <user_instruction> explicitly supplies a value for them
+  OR the value can be filled from <deal_facts>.
 - For any new specific fact you would otherwise need to invent, insert a
   [[SCREAMING_SNAKE_CASE]] placeholder rather than fabricating it.
-</output_rules>`;
+</output_rules>
+
+<deal_facts_rules>
+- The <deal_facts> block is GROUND TRUTH from the CRM. Names, addresses,
+  amounts, and dates inside it are correct and must be used verbatim if
+  the revised clause needs them.
+- The <user_instruction> may override a deal fact (e.g. "change the rent
+  to 5000"). When it does, follow the instruction and override.
+</deal_facts_rules>`;
 
 export interface BuildEditArgs {
   jurisdiction: string;
@@ -243,6 +275,7 @@ export interface BuildEditArgs {
   userInstruction: string;
   constraints: ConstraintRow[];
   glossary: GlossaryRow[];
+  dealFacts?: string;
 }
 
 export function buildEditPrompt(args: BuildEditArgs): string {
@@ -255,6 +288,10 @@ export function buildEditPrompt(args: BuildEditArgs): string {
 <ui_language>${args.uiLanguage}</ui_language>
 
 <section_id>${args.sectionId}</section_id>
+
+<deal_facts>
+${cdata(args.dealFacts && args.dealFacts.trim().length > 0 ? args.dealFacts : "(no CRM entities resolved)")}
+</deal_facts>
 
 <current_clause language="${args.jurisdictionLanguage}">
 ${cdata(args.current.content_legal)}

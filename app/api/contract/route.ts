@@ -7,7 +7,6 @@ import {
   EditRequestSchema,
   AcceptRequestSchema,
   ContractDocumentSchema,
-  ContractSectionSchema,
   type ContractSection,
 } from "@/lib/schemas";
 import {
@@ -16,6 +15,7 @@ import {
   type UsageInfo,
 } from "@/lib/ai";
 import { computeCostUsd } from "@/lib/usage";
+import { fetchAndSerializeDealContext } from "@/lib/context-builder";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -26,7 +26,6 @@ export const maxDuration = 600;
 // ---------------------------------------------------------------------------
 
 function clientIp(req: NextRequest): string | null {
-  // Render / Vercel / Cloudflare style headers, in order of precedence.
   const xff = req.headers.get("x-forwarded-for");
   if (xff) return xff.split(",")[0].trim();
   const real = req.headers.get("x-real-ip");
@@ -37,7 +36,7 @@ function clientIp(req: NextRequest): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// GET /api/contract — list recent
+// GET — list recent contracts
 // ---------------------------------------------------------------------------
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
@@ -54,6 +53,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       bridgeLanguage: true,
       uiLanguage: true,
       type: true,
+      dealId: true,
       uiLanguageAcceptedAt: true,
       acceptedByUserId: true,
       createdAt: true,
@@ -64,7 +64,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 }
 
 // ---------------------------------------------------------------------------
-// POST /api/contract — Holy Trinity generation + audit-trail capture
+// POST — Holy-Trinity generation, stateful (CRM-anchored) or stateless
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -76,34 +76,53 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       { status: 400 },
     );
   }
-  const {
-    jurisdiction,
-    jurisdictionLanguage,
-    bridgeLanguage,
-    uiLanguage,
-    type,
-    inputs,
-    acceptedByUserId,
-  } = parsed.data;
-
+  const data = parsed.data;
   const ip = clientIp(req);
+
+  // ---- Resolve deal facts from CRM if any IDs were provided ----
+  const ctx = await fetchAndSerializeDealContext(prisma, {
+    propertyId: data.propertyId,
+    tenantId: data.tenantId,
+    dealId: data.dealId,
+  });
+
+  // Prefer CRM-derived jurisdiction + type when available, else the
+  // explicit fields from the request.
+  const jurisdiction =
+    ctx.property?.jurisdiction ?? data.jurisdiction ?? null;
+  const type = ctx.deal?.contractType ?? data.type ?? null;
+  if (!jurisdiction || !type) {
+    return NextResponse.json(
+      {
+        error:
+          "Could not determine jurisdiction or contract type — provide them explicitly or attach a CRM entity that carries them",
+      },
+      { status: 400 },
+    );
+  }
+
+  // Inputs: start from the request's free-form bag, allow CRM-resolved
+  // entities to seed convenient values (the model will still rely primarily
+  // on the structured deal_facts block).
+  const inputs: Record<string, unknown> = { ...(data.inputs ?? {}) };
 
   let docResult;
   try {
     docResult = await generateInitialContract({
       jurisdiction,
-      jurisdictionLanguage,
-      bridgeLanguage,
-      uiLanguage,
+      jurisdictionLanguage: data.jurisdictionLanguage,
+      bridgeLanguage: data.bridgeLanguage,
+      uiLanguage: data.uiLanguage,
       type,
       inputs,
+      dealFacts: ctx.factSheet,
       prisma,
     });
   } catch (e) {
     await logUsage({
       operation: "GENERATE",
       jurisdiction,
-      languageEnum: isoToEnum(jurisdictionLanguage) ?? "EN",
+      languageEnum: isoToEnum(data.jurisdictionLanguage) ?? "EN",
       type,
       sectionId: null,
       contractId: null,
@@ -120,17 +139,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const saved = await prisma.contract.create({
     data: {
       jurisdiction,
-      jurisdictionLanguage,
-      bridgeLanguage,
-      uiLanguage,
+      jurisdictionLanguage: data.jurisdictionLanguage,
+      bridgeLanguage: data.bridgeLanguage,
+      uiLanguage: data.uiLanguage,
       type,
       metadata: docResult.document.metadata as unknown as Prisma.InputJsonValue,
       sections: docResult.document.sections as unknown as Prisma.InputJsonValue,
-      // If the consumer passed an authenticated user id we record acceptance
-      // immediately. Otherwise the dedicated PUT acceptance endpoint can
-      // record it later when the user clicks the consent button.
-      acceptedByUserId: acceptedByUserId ?? null,
-      uiLanguageAcceptedAt: acceptedByUserId ? new Date() : null,
+      dealId: ctx.deal?.id ?? null,
+      acceptedByUserId: data.acceptedByUserId ?? null,
+      uiLanguageAcceptedAt: data.acceptedByUserId ? new Date() : null,
       userIpAddress: ip,
     },
     select: { id: true, createdAt: true },
@@ -139,7 +156,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   await logUsage({
     operation: "GENERATE",
     jurisdiction,
-    languageEnum: isoToEnum(jurisdictionLanguage) ?? "EN",
+    languageEnum: isoToEnum(data.jurisdictionLanguage) ?? "EN",
     type,
     sectionId: null,
     contractId: saved.id,
@@ -153,6 +170,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       id: saved.id,
       createdAt: saved.createdAt,
       document: docResult.document,
+      dealFacts: ctx.factSheet,
+      missing: ctx.missing,
       usage: {
         ...docResult.usage,
         costUsd: computeCostUsd(docResult.usage.inputTokens, docResult.usage.outputTokens),
@@ -163,8 +182,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 }
 
 // ---------------------------------------------------------------------------
-// PATCH /api/contract — partial section edit, regenerated in all 3 languages
-// Body: { contractId, sectionId, userInstruction, acceptedByUserId? }
+// PATCH — partial section edit; re-injects deal facts so the model
+// preserves names/amounts when revising.
 // ---------------------------------------------------------------------------
 
 export async function PATCH(req: NextRequest): Promise<NextResponse> {
@@ -196,6 +215,13 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
+  // Re-fetch deal context so the edit prompt has the same ground truth as
+  // the original generation. The contract may not be linked to a deal
+  // (chat-initiated drafts don't link); in that case factSheet is empty.
+  const ctx = contract.dealId
+    ? await fetchAndSerializeDealContext(prisma, { dealId: contract.dealId })
+    : { factSheet: "" };
+
   let editResult;
   try {
     editResult = await editContractSection({
@@ -211,6 +237,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
         content_ui: target.content_ui,
       },
       userInstruction,
+      dealFacts: ctx.factSheet,
       prisma,
     });
   } catch (e) {
@@ -235,9 +262,6 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     s.id === sectionId ? editResult.section : s,
   );
 
-  // Editing a section invalidates a previously-recorded acceptance (the user
-  // accepted a different version of the contract). Optionally re-stamp if the
-  // caller forwarded a new userId — otherwise clear acceptance.
   const ip = clientIp(req);
   const updated = await prisma.contract.update({
     where: { id: contractId },
@@ -274,9 +298,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
 }
 
 // ---------------------------------------------------------------------------
-// PUT /api/contract — record user acceptance (audit trail only)
-// Body: { contractId, acceptedByUserId }
-// IP is captured from request headers.
+// PUT — record user acceptance (audit trail only)
 // ---------------------------------------------------------------------------
 
 export async function PUT(req: NextRequest): Promise<NextResponse> {
@@ -353,8 +375,6 @@ async function logUsage(args: {
   status: "OK" | "ERROR";
   error: string | null;
 }): Promise<void> {
-  // Ensure ContractSectionSchema reference is kept for tree-shaking
-  void ContractSectionSchema;
   const cost = computeCostUsd(args.usage.inputTokens, args.usage.outputTokens);
   try {
     await prisma.usageLog.create({

@@ -94,18 +94,41 @@ export type ContractDocument = z.infer<typeof ContractDocumentSchema>;
 // API request schemas
 // ---------------------------------------------------------------------------
 
-export const GenerateRequestSchema = z.object({
-  jurisdiction: z.string().min(2),
-  jurisdictionLanguage: IsoLanguageSchema,
-  bridgeLanguage: IsoLanguageSchema,
-  uiLanguage: IsoLanguageSchema,
-  type: ContractTypeEnum,
-  inputs: z.record(z.string(), z.unknown()),
-  // Optional audit-trail context. If the consumer is collecting acceptance
-  // server-side they can pass it on creation; otherwise the dedicated
-  // acceptance endpoint can update later.
-  acceptedByUserId: z.string().min(1).max(200).optional(),
-});
+export const GenerateRequestSchema = z
+  .object({
+    // Stateful path: pull facts from CRM entities. Any combination of these
+    // resolves a Deal context (see lib/context-builder.ts).
+    propertyId: z.string().min(1).optional(),
+    tenantId: z.string().min(1).optional(),
+    dealId: z.string().min(1).optional(),
+
+    // Required language metadata — independent of the entity layer because
+    // a single deal may be drafted under different jurisdictions/languages.
+    jurisdictionLanguage: IsoLanguageSchema,
+    bridgeLanguage: IsoLanguageSchema,
+    uiLanguage: IsoLanguageSchema,
+
+    // Stateless overrides. When entity IDs are not provided, jurisdiction +
+    // type fall back to these. Inputs is a free-form key/value bag for
+    // ad-hoc generation (e.g. chat-initiated drafts).
+    jurisdiction: z.string().min(2).optional(),
+    type: ContractTypeEnum.optional(),
+    inputs: z.record(z.string(), z.unknown()).optional(),
+
+    // Optional audit-trail context.
+    acceptedByUserId: z.string().min(1).max(200).optional(),
+  })
+  .refine(
+    (d) =>
+      !!d.dealId ||
+      !!d.propertyId ||
+      !!d.tenantId ||
+      (!!d.jurisdiction && !!d.type),
+    {
+      message:
+        "Provide CRM ids (dealId / propertyId / tenantId) or stateless jurisdiction + type",
+    },
+  );
 
 export const EditRequestSchema = z.object({
   contractId: z.string().min(1),

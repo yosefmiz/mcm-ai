@@ -222,6 +222,12 @@ export interface GenerateInput {
   uiLanguage: string;
   type: ContractType;
   inputs: Record<string, unknown>;
+  /**
+   * Plain-text Fact Sheet from lib/context-builder. ai.ts does not know
+   * about Prisma; the caller resolves entities and passes the formatted
+   * string here for prompt injection.
+   */
+  dealFacts?: string;
   prisma: PrismaClient;
 }
 
@@ -248,6 +254,7 @@ export async function generateInitialContract(
     constraints,
     glossary,
     templates,
+    dealFacts: input.dealFacts,
   });
 
   const { raw, durationMs } = await invokeGenerateWithRetry(userPrompt);
@@ -363,6 +370,8 @@ export interface EditInput {
   sectionId: string;
   current: { content_legal: string; content_bridge: string; content_ui: string };
   userInstruction: string;
+  /** Plain-text Fact Sheet from lib/context-builder. */
+  dealFacts?: string;
   prisma: PrismaClient;
 }
 
@@ -383,6 +392,7 @@ export async function editContractSection(input: EditInput): Promise<EditResult>
     userInstruction: input.userInstruction,
     constraints,
     glossary,
+    dealFacts: input.dealFacts,
   });
 
   const startedAt = Date.now();
