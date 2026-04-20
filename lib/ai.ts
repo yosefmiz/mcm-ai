@@ -1,3 +1,5 @@
+import "./http-runtime";
+
 import { ChatOllama } from "@langchain/ollama";
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage, MessageContent } from "@langchain/core/messages";

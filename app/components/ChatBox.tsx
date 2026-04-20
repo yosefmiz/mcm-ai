@@ -67,7 +67,10 @@ export default function ChatBox() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Request failed");
+      if (!res.ok) {
+        const detail = data.detail ? ` — ${data.detail}` : "";
+        throw new Error((data.error ?? "Request failed") + detail);
+      }
       const meta = `${data.usage.totalTokens} tokens · ${(data.usage.durationMs / 1000).toFixed(1)}s · $${Number(data.usage.costUsd).toFixed(6)}`;
       setMessages((m) => [
         ...m,

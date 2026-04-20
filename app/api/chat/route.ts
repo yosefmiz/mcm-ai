@@ -14,6 +14,7 @@ import { computeCostUsd } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 600;
 
 const ChatRequestSchema = z.object({
   messages: z
