@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useT } from "../components/LocaleProvider";
 
 type Lang = "HE" | "EN" | "RU" | "AR";
 type Ctype = "ANNUAL" | "SUBLET" | "MANAGEMENT";
@@ -21,7 +22,10 @@ interface Usage {
 }
 interface GenResponse {
   id: string;
-  document: { metadata: { jurisdiction: string; language: Lang; type: Ctype }; sections: Section[] };
+  document: {
+    metadata: { jurisdiction: string; language: Lang; type: Ctype };
+    sections: Section[];
+  };
   usage: Usage;
 }
 interface EditResponse {
@@ -45,6 +49,7 @@ const DEFAULT_INPUTS = JSON.stringify(
 );
 
 export default function Playground() {
+  const t = useT();
   const [jurisdiction, setJurisdiction] = useState("NY, US");
   const [language, setLanguage] = useState<Lang>("EN");
   const [type, setType] = useState<Ctype>("ANNUAL");
@@ -127,13 +132,13 @@ export default function Playground() {
 
   return (
     <main>
-      <h1>Playground</h1>
-      <p className="muted">Generate a contract, then edit any section in plain language.</p>
+      <h1>{t.playground.title}</h1>
+      <p className="muted">{t.playground.subtitle}</p>
 
       <form onSubmit={generate} className="card" style={{ marginTop: "1rem" }}>
         <div className="grid-3">
           <div>
-            <label>Jurisdiction</label>
+            <label>{t.playground.jurisdiction}</label>
             <input
               value={jurisdiction}
               onChange={(e) => setJurisdiction(e.target.value)}
@@ -142,7 +147,7 @@ export default function Playground() {
             />
           </div>
           <div>
-            <label>Language</label>
+            <label>{t.playground.language}</label>
             <select value={language} onChange={(e) => setLanguage(e.target.value as Lang)}>
               <option value="EN">English</option>
               <option value="HE">עברית</option>
@@ -151,48 +156,57 @@ export default function Playground() {
             </select>
           </div>
           <div>
-            <label>Type</label>
+            <label>{t.playground.type}</label>
             <select value={type} onChange={(e) => setType(e.target.value as Ctype)}>
-              <option value="ANNUAL">Annual</option>
-              <option value="SUBLET">Sublet</option>
-              <option value="MANAGEMENT">Management</option>
+              <option value="ANNUAL">{t.playground.typeAnnual}</option>
+              <option value="SUBLET">{t.playground.typeSublet}</option>
+              <option value="MANAGEMENT">{t.playground.typeManagement}</option>
             </select>
           </div>
         </div>
         <div style={{ marginTop: "0.75rem" }}>
-          <label>Inputs (JSON)</label>
+          <label>{t.playground.inputsJson}</label>
           <textarea value={inputsText} onChange={(e) => setInputsText(e.target.value)} />
         </div>
-        <div style={{ marginTop: "0.75rem", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span className="muted" style={{ fontSize: "0.8rem" }}>
-            Uses Ollama local model. Generation typically takes 30-90 seconds.
-          </span>
-          <button type="submit" disabled={busy}>{busy ? "Generating…" : "Generate Contract"}</button>
+        <div
+          style={{
+            marginTop: "0.75rem",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "0.5rem",
+            flexWrap: "wrap",
+          }}
+        >
+          <span className="muted" style={{ fontSize: "0.8rem" }}>{t.playground.note}</span>
+          <button type="submit" disabled={busy}>
+            {busy ? t.playground.generating : t.playground.generate}
+          </button>
         </div>
       </form>
 
       {error && (
         <div className="card" style={{ marginTop: "1rem", borderColor: "var(--err)" }}>
-          <strong style={{ color: "var(--err)" }}>Error:</strong> {error}
+          <strong style={{ color: "var(--err)" }}>{t.common.error}:</strong> {error}
         </div>
       )}
 
       {usage && (
         <div className="grid-4" style={{ marginTop: "1rem" }}>
           <div className="card">
-            <div className="stat-label">Cost (last call)</div>
+            <div className="stat-label">{t.playground.costLast}</div>
             <div className="stat-value">${usage.costUsd.toFixed(6)}</div>
           </div>
           <div className="card">
-            <div className="stat-label">Total tokens</div>
+            <div className="stat-label">{t.playground.totalTokens}</div>
             <div className="stat-value">{usage.totalTokens.toLocaleString()}</div>
           </div>
           <div className="card">
-            <div className="stat-label">Latency</div>
+            <div className="stat-label">{t.playground.latency}</div>
             <div className="stat-value">{(usage.durationMs / 1000).toFixed(1)}s</div>
           </div>
           <div className="card">
-            <div className="stat-label">Model</div>
+            <div className="stat-label">{t.playground.model}</div>
             <div className="stat-value" style={{ fontSize: "1rem" }}>{usage.model}</div>
           </div>
         </div>
@@ -200,12 +214,17 @@ export default function Playground() {
 
       {contract && (
         <>
-          <h2>Sections — contract {contract.id.slice(0, 10)}…</h2>
+          <h2>{t.playground.sectionsFor} {contract.id.slice(0, 10)}…</h2>
           <div dir={dir}>
             {contract.document.sections.map((s) => (
               <div className="section-card" key={s.id}>
                 <header>
-                  <h4>{s.title} <span className="muted mono" style={{ fontSize: "0.75rem", marginLeft: "0.5rem" }}>{s.id}</span></h4>
+                  <h4>
+                    {s.title}{" "}
+                    <span className="muted mono" style={{ fontSize: "0.75rem", marginInlineStart: "0.5rem" }}>
+                      {s.id}
+                    </span>
+                  </h4>
                   <button
                     className="ghost"
                     onClick={() => {
@@ -213,22 +232,25 @@ export default function Playground() {
                       setEditInstruction("");
                     }}
                   >
-                    {editingId === s.id ? "Cancel" : "Edit"}
+                    {editingId === s.id ? t.playground.cancel : t.playground.edit}
                   </button>
                 </header>
                 <div className="section-content">{s.content}</div>
                 {editingId === s.id && (
                   <div style={{ marginTop: "0.75rem" }}>
-                    <label>Edit instruction (free text)</label>
+                    <label>{t.playground.editInstruction}</label>
                     <textarea
                       value={editInstruction}
                       onChange={(e) => setEditInstruction(e.target.value)}
-                      placeholder="e.g. Reduce the deposit to one month rent"
+                      placeholder={t.playground.editPlaceholder}
                       style={{ minHeight: "5rem" }}
                     />
-                    <div style={{ marginTop: "0.5rem", textAlign: "right" }}>
-                      <button onClick={() => applyEdit(s.id)} disabled={editBusy || !editInstruction.trim()}>
-                        {editBusy ? "Editing…" : "Apply edit"}
+                    <div style={{ marginTop: "0.5rem", textAlign: "end" }}>
+                      <button
+                        onClick={() => applyEdit(s.id)}
+                        disabled={editBusy || !editInstruction.trim()}
+                      >
+                        {editBusy ? t.playground.editing : t.playground.applyEdit}
                       </button>
                     </div>
                   </div>

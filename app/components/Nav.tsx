@@ -3,16 +3,20 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import ThemeToggle from "./ThemeToggle";
-
-const links = [
-  { href: "/", label: "Chat" },
-  { href: "/playground", label: "Playground" },
-  { href: "/history", label: "History" },
-  { href: "/usage", label: "Usage" },
-];
+import LocaleSwitcher from "./LocaleSwitcher";
+import { useT } from "./LocaleProvider";
 
 export default function Nav() {
   const pathname = usePathname();
+  const t = useT();
+
+  const links = [
+    { href: "/", label: t.nav.chat },
+    { href: "/playground", label: t.nav.playground },
+    { href: "/history", label: t.nav.history },
+    { href: "/usage", label: t.nav.usage },
+  ];
+
   return (
     <nav className="topnav">
       <Link href="/" className="brand" style={{ textDecoration: "none" }}>
@@ -28,6 +32,7 @@ export default function Nav() {
         </Link>
       ))}
       <span className="spacer" />
+      <LocaleSwitcher />
       <ThemeToggle />
     </nav>
   );

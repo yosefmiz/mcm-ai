@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useT } from "./LocaleProvider";
 
 type Theme = "light" | "dark";
 
@@ -13,6 +14,7 @@ function readTheme(): Theme {
 export default function ThemeToggle() {
   const [theme, setTheme] = useState<Theme>("light");
   const [mounted, setMounted] = useState(false);
+  const t = useT();
 
   useEffect(() => {
     setTheme(readTheme());
@@ -30,13 +32,14 @@ export default function ThemeToggle() {
     setTheme(next);
   }
 
+  const label = theme === "dark" ? t.theme.toLight : t.theme.toDark;
   return (
     <button
       type="button"
       className="theme-toggle"
       onClick={toggle}
-      aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-      title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      aria-label={label}
+      title={label}
     >
       {mounted ? (theme === "dark" ? "☀" : "☾") : "·"}
     </button>

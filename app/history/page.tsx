@@ -1,60 +1,84 @@
+"use client";
+
 import Link from "next/link";
-import { prisma } from "@/lib/prisma";
+import { useEffect, useState } from "react";
+import { useT } from "../components/LocaleProvider";
 
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
+interface Row {
+  id: string;
+  jurisdiction: string;
+  language: string;
+  type: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
-export default async function HistoryPage() {
-  const contracts = await prisma.contract.findMany({
-    orderBy: { createdAt: "desc" },
-    take: 100,
-    select: {
-      id: true,
-      jurisdiction: true,
-      language: true,
-      type: true,
-      createdAt: true,
-      updatedAt: true,
-      _count: { select: { usageLogs: true } },
-    },
-  });
+export default function HistoryPage() {
+  const t = useT();
+  const [rows, setRows] = useState<Row[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let canceled = false;
+    fetch("/api/contract?take=100")
+      .then((r) => r.json())
+      .then((data) => {
+        if (!canceled) setRows(data.contracts ?? []);
+      })
+      .catch((e) => {
+        if (!canceled) setError((e as Error).message);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   return (
     <main>
-      <h1>History</h1>
-      <p className="muted">All contracts in the database, newest first. {contracts.length} shown.</p>
+      <h1>{t.history.title}</h1>
+      <p className="muted">{t.history.subtitle(rows?.length ?? 0)}</p>
 
-      {contracts.length === 0 ? (
-        <div className="card" style={{ marginTop: "1rem" }}>
-          <p className="muted">No contracts yet. Generate one in the <Link href="/playground">Playground</Link>.</p>
+      {error && (
+        <div className="card" style={{ marginTop: "1rem", borderColor: "var(--err)" }}>
+          <strong style={{ color: "var(--err)" }}>{t.common.error}:</strong> {error}
         </div>
-      ) : (
+      )}
+
+      {rows && rows.length === 0 ? (
+        <div className="card" style={{ marginTop: "1rem" }}>
+          <p className="muted">
+            {t.history.none} <Link href="/playground">{t.history.inPlayground}</Link>.
+          </p>
+        </div>
+      ) : rows ? (
         <table className="table" style={{ marginTop: "1rem" }}>
           <thead>
             <tr>
               <th>ID</th>
-              <th>Type</th>
-              <th>Lang</th>
-              <th>Jurisdiction</th>
-              <th>Calls</th>
-              <th>Created</th>
-              <th>Updated</th>
+              <th>{t.playground.type}</th>
+              <th>{t.playground.language}</th>
+              <th>{t.playground.jurisdiction}</th>
+              <th>{t.usage.totalCalls}</th>
+              <th>{t.history.contractLabel}</th>
             </tr>
           </thead>
           <tbody>
-            {contracts.map((c) => (
+            {rows.map((c) => (
               <tr key={c.id}>
-                <td className="mono"><Link href={`/history/${c.id}`}>{c.id.slice(0, 12)}…</Link></td>
+                <td className="mono">
+                  <Link href={`/history/${c.id}`}>{c.id.slice(0, 12)}…</Link>
+                </td>
                 <td>{c.type}</td>
                 <td>{c.language}</td>
                 <td>{c.jurisdiction}</td>
-                <td>{c._count.usageLogs}</td>
-                <td className="muted">{c.createdAt.toISOString().slice(0, 19).replace("T", " ")}</td>
-                <td className="muted">{c.updatedAt.toISOString().slice(0, 19).replace("T", " ")}</td>
+                <td className="muted">—</td>
+                <td className="muted">{new Date(c.createdAt).toISOString().slice(0, 19).replace("T", " ")}</td>
               </tr>
             ))}
           </tbody>
         </table>
+      ) : (
+        <p className="muted" style={{ marginTop: "1rem" }}>…</p>
       )}
     </main>
   );
