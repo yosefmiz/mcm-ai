@@ -183,10 +183,8 @@ export default function ChatBox() {
 
 function ContractCard({ art }: { art: ContractArtifact }) {
   const meta = art.document.metadata;
-  // The legal column is always populated; bridge/ui may be empty or absent.
   const primaryLang = meta.jurisdictionLanguage;
   const isRtl = RTL_REGEX.test(art.document.sections[0]?.content_legal ?? "");
-  const [openSection, setOpenSection] = useState<string | null>(null);
   const [showJson, setShowJson] = useState(false);
 
   return (
@@ -213,44 +211,25 @@ function ContractCard({ art }: { art: ContractArtifact }) {
         </span>
       </header>
 
-      <div dir={isRtl ? "rtl" : "ltr"} style={{ marginTop: "0.75rem" }}>
-        {art.document.sections.map((s) => {
-          const isOpen = openSection === s.id;
-          return (
+      <div dir={isRtl ? "rtl" : "ltr"} style={{ marginTop: "1rem" }}>
+        {art.document.sections.map((s) => (
+          <section key={s.id} style={{ marginBottom: "1.25rem" }}>
             <div
-              key={s.id}
+              className="mono muted"
               style={{
-                borderTop: "1px solid var(--border)",
-                paddingTop: "0.5rem",
-                paddingBottom: "0.5rem",
+                fontSize: "0.7rem",
+                letterSpacing: "0.05em",
+                textTransform: "uppercase",
+                marginBottom: "0.25rem",
               }}
             >
-              <button
-                type="button"
-                className="ghost"
-                style={{
-                  width: "100%",
-                  textAlign: "start",
-                  padding: "0.25rem 0",
-                  border: "none",
-                  background: "transparent",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "baseline",
-                }}
-                onClick={() => setOpenSection(isOpen ? null : s.id)}
-              >
-                <span className="mono" style={{ fontSize: "0.85rem" }}>{s.id}</span>
-                <span className="muted" style={{ fontSize: "0.7rem" }}>{isOpen ? "−" : "+"}</span>
-              </button>
-              {isOpen && (
-                <div className="section-content" style={{ fontSize: "0.85rem", marginTop: "0.3rem" }}>
-                  {s.content_legal}
-                </div>
-              )}
+              {s.id}
             </div>
-          );
-        })}
+            <div className="section-content" style={{ fontSize: "0.9rem", lineHeight: 1.6 }}>
+              {s.content_legal}
+            </div>
+          </section>
+        ))}
       </div>
 
       {art.placeholders.length > 0 && (
