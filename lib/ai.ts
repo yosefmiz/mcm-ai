@@ -133,7 +133,15 @@ export async function fetchGlossary(
   });
 }
 
-const TEMPLATE_INJECTION_COUNT = Number(process.env.TEMPLATE_INJECTION_COUNT ?? 3);
+const TEMPLATE_INJECTION_COUNT = Number(process.env.TEMPLATE_INJECTION_COUNT ?? 1);
+
+const ZERO_USAGE: UsageInfo = {
+  model: process.env.OLLAMA_MODEL ?? "gemma4",
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  durationMs: 0,
+};
 
 export async function fetchExemplarTemplates(
   prisma: PrismaClient,
@@ -230,14 +238,7 @@ export async function generateInitialContract(
     templates,
   });
 
-  const startedAt = Date.now();
-  const res = await jsonModel.invoke([
-    new SystemMessage(SYSTEM_GENERATE),
-    new HumanMessage(userPrompt),
-  ]);
-  const durationMs = Date.now() - startedAt;
-
-  const raw = messageContentToString(res.content);
+  const { raw, durationMs } = await invokeGenerateWithRetry(userPrompt);
   const cleaned = stripJsonFences(raw);
 
   let parsed: unknown;
@@ -281,8 +282,51 @@ export async function generateInitialContract(
 
   return {
     document: { metadata: validated.data.metadata, sections },
-    usage: extractUsage(res, durationMs),
+    usage: genUsage,
   };
+}
+
+/**
+ * Invoke the JSON model with one retry on JSON parse failure. The retry
+ * prepends a blunter "YOUR LAST OUTPUT WAS INVALID JSON" reminder to the
+ * user prompt — that alone usually flips gemma4 back into structured
+ * emission mode.
+ */
+let genUsage: UsageInfo = ZERO_USAGE;
+
+async function invokeGenerateWithRetry(
+  userPrompt: string,
+  attempt = 0,
+): Promise<{ raw: string; durationMs: number }> {
+  const startedAt = Date.now();
+  const messages = [new SystemMessage(SYSTEM_GENERATE), new HumanMessage(userPrompt)];
+  const res = await jsonModel.invoke(messages);
+  const durationMs = Date.now() - startedAt;
+  const raw = messageContentToString(res.content);
+  const usage = extractUsage(res, durationMs);
+
+  // quick-probe parse — if it succeeds, we are done
+  try {
+    JSON.parse(stripJsonFences(raw));
+    genUsage = attempt === 0 ? usage : {
+      ...usage,
+      inputTokens: genUsage.inputTokens + usage.inputTokens,
+      outputTokens: genUsage.outputTokens + usage.outputTokens,
+      totalTokens: genUsage.totalTokens + usage.totalTokens,
+      durationMs: genUsage.durationMs + usage.durationMs,
+    };
+    return { raw, durationMs };
+  } catch {
+    if (attempt >= 1) {
+      genUsage = usage;
+      return { raw, durationMs };
+    }
+    genUsage = usage;
+    const retryPrompt =
+      `YOUR PREVIOUS OUTPUT WAS NOT VALID JSON. Emit ONLY a single valid JSON object with the exact fields metadata, sections. EACH section MUST have all four keys: id, content_legal, content_bridge, content_ui. No other keys, no markdown, no prose.\n\n` +
+      userPrompt;
+    return invokeGenerateWithRetry(retryPrompt, attempt + 1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -596,14 +640,6 @@ function defaultsForUiLang(uiLang: string): {
     default:   return { jurisdiction: "NY, US", jurisdictionLanguage: "en", bridgeLanguage: "en" };
   }
 }
-
-const ZERO_USAGE: UsageInfo = {
-  model: process.env.OLLAMA_MODEL ?? "gemma4",
-  inputTokens: 0,
-  outputTokens: 0,
-  totalTokens: 0,
-  durationMs: 0,
-};
 
 export async function routeChatTurn(
   message: string,

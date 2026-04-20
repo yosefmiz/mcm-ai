@@ -51,18 +51,25 @@ const formatGlossary = (rows: GlossaryRow[]): string =>
         )
         .join("\n");
 
+/**
+ * Format reference templates as clearly-prose Markdown so the model does
+ * not mistake their shape for the expected JSON output schema. The old
+ * JSON-ish "[id] content" format caused gemma4 to emit the wrong field
+ * name ("content" instead of content_legal / content_bridge / content_ui)
+ * on generation, producing malformed JSON.
+ */
 const formatTemplates = (refs: TemplateRef[]): string =>
   refs.length === 0
     ? "(none on file)"
     : refs
         .map(
           (ref, i) =>
-            `--- REFERENCE ${i + 1} (language=${ref.language}) — ${ref.title} ---\n` +
+            `### Reference ${i + 1}: ${ref.title} (${ref.language})\n\n` +
             ref.sections
-              .map((s) => `[${s.id}] ${s.title}\n${s.content}`)
-              .join("\n\n"),
+              .map((s) => `**${s.title}**\n\n${s.content}`)
+              .join("\n\n---\n\n"),
         )
-        .join("\n\n");
+        .join("\n\n=====\n\n");
 
 // ===========================================================================
 // GENERATE — full contract authoring (3-language native composition)
@@ -150,6 +157,15 @@ ${cdata(formatConstraints(args.constraints))}
 <glossary>
 ${cdata(formatGlossary(args.glossary))}
 </glossary>
+
+<reference_templates_note>
+The reference templates below are PROSE EXAMPLES of contracts previously
+drafted in this jurisdiction. They are written in ONE language and use
+regular prose headings. They are NOT a shape template for your output.
+IGNORE their structure and field names. YOUR OUTPUT MUST use exactly the
+three fields content_legal, content_bridge, content_ui — never a single
+"content" field.
+</reference_templates_note>
 
 <reference_templates>
 ${cdata(formatTemplates(args.templates))}
