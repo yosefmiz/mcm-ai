@@ -153,20 +153,20 @@ function buildContractReplyText(uiLang: string, placeholderCount: number): strin
   switch (lang) {
     case "he":
       return placeholderNote
-        ? `יצרתי עבורך טיוטת חוזה מלאה ושמורה לפי הדין המקומי. ${placeholderCount} פרטים נשארו כ‑[[שדה]] — תוכל למלא אותם בכרטיס למטה או בפלייגראונד.`
-        : "יצרתי עבורך טיוטת חוזה מלאה ושמורה לפי הדין המקומי.";
+        ? `יצרתי עבורך טיוטת חוזה מלאה לפי הדין המקומי. ${placeholderCount} פרטים נשארו כ‑[[שדה]]; פתח כל סעיף למטה כדי לקרוא את הניסוח המלא ולמלא דרך ה‑API.`
+        : "יצרתי עבורך טיוטת חוזה מלאה לפי הדין המקומי. פתח כל סעיף למטה כדי לקרוא את הניסוח המלא.";
     case "ar":
       return placeholderNote
-        ? `أعددت لك مسودة عقد كاملة وفقاً للقانون المحلي. ${placeholderCount} حقولاً تركت كـ [[FIELD]] — يمكنك تعبئتها أدناه أو في الـ Playground.`
-        : "أعددت لك مسودة عقد كاملة وفقاً للقانون المحلي.";
+        ? `أعددت لك مسودة عقد كاملة وفقاً للقانون المحلي. ${placeholderCount} حقولاً تركت كـ [[FIELD]]؛ افتح كل بند أدناه لقراءة الصياغة الكاملة وتعبئتها عبر الـ API.`
+        : "أعددت لك مسودة عقد كاملة وفقاً للقانون المحلي. افتح كل بند أدناه لقراءة الصياغة الكاملة.";
     case "ru":
       return placeholderNote
-        ? `Я подготовил для вас полный проект договора по местному праву. Осталось ${placeholderCount} полей вида [[FIELD]] — заполните их ниже или в Playground.`
-        : "Я подготовил для вас полный проект договора по местному праву.";
+        ? `Я подготовил для вас полный проект договора по местному праву. Осталось ${placeholderCount} полей вида [[FIELD]]; разверните каждый раздел ниже, чтобы прочитать полный текст и заполнить через API.`
+        : "Я подготовил для вас полный проект договора по местному праву. Разверните каждый раздел ниже, чтобы прочитать полный текст.";
     default:
       return placeholderNote
-        ? `I drafted a full contract for you under the local law. ${placeholderCount} field${placeholderCount === 1 ? "" : "s"} remain as [[FIELD]] — fill them below or in the Playground.`
-        : "I drafted a full contract for you under the local law.";
+        ? `I drafted a full contract for you under the local law. ${placeholderCount} field${placeholderCount === 1 ? "" : "s"} remain as [[FIELD]]; expand each section below to read the full clause and fill them via the API.`
+        : "I drafted a full contract for you under the local law. Expand each section below to read the full clause.";
   }
 }
 
