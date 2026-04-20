@@ -29,6 +29,7 @@ enum Language {
 enum Operation {
   GENERATE
   EDIT
+  CHAT
 }
 
 model Contract {

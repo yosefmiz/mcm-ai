@@ -1,6 +1,6 @@
 import { ChatOllama } from "@langchain/ollama";
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-import type { AIMessage, MessageContent } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import type { BaseMessage, MessageContent } from "@langchain/core/messages";
 import type { PrismaClient, ContractType, Language } from "@prisma/client";
 
 import {
@@ -201,6 +201,49 @@ export async function editContractSection(input: EditInput): Promise<EditResult>
     content: cleaned,
     usage: extractUsage(res, durationMs),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Chat (free-form Q&A about real estate / contracts)
+// ---------------------------------------------------------------------------
+
+const SYSTEM_CHAT = `You are MyHome's real-estate assistant.
+You help landlords, tenants, and managers understand rental contracts, jurisdiction-specific rules, and lease terms.
+Keep answers concise, practical, and jurisdiction-aware. If the user asks for a contract, suggest they use the Playground page (/playground) and outline what info they need to provide.
+Never invent statutes; if you are not sure of a specific rule, say so and suggest checking with a licensed attorney.
+Match the user's language (Hebrew, English, Russian, Arabic).`;
+
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ChatResult {
+  reply: string;
+  usage: UsageInfo;
+}
+
+export async function chatComplete(history: ChatTurn[]): Promise<ChatResult> {
+  if (history.length === 0) {
+    throw new Error("chat history is empty");
+  }
+  const messages: BaseMessage[] = [new SystemMessage(SYSTEM_CHAT)];
+  for (const turn of history) {
+    messages.push(
+      turn.role === "user"
+        ? new HumanMessage(turn.content)
+        : new AIMessage(turn.content),
+    );
+  }
+
+  const startedAt = Date.now();
+  const res = await textModel.invoke(messages);
+  const durationMs = Date.now() - startedAt;
+
+  const reply = messageContentToString(res.content).trim();
+  if (!reply) throw new Error("Model produced an empty reply");
+
+  return { reply, usage: extractUsage(res, durationMs) };
 }
 
 // ---------------------------------------------------------------------------
