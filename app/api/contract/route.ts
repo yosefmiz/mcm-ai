@@ -5,7 +5,9 @@ import { prisma } from "@/lib/prisma";
 import {
   GenerateRequestSchema,
   EditRequestSchema,
+  AcceptRequestSchema,
   ContractDocumentSchema,
+  ContractSectionSchema,
   type ContractSection,
 } from "@/lib/schemas";
 import {
@@ -19,7 +21,22 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
-// GET — list recent contracts
+// Audit-trail helpers
+// ---------------------------------------------------------------------------
+
+function clientIp(req: NextRequest): string | null {
+  // Render / Vercel / Cloudflare style headers, in order of precedence.
+  const xff = req.headers.get("x-forwarded-for");
+  if (xff) return xff.split(",")[0].trim();
+  const real = req.headers.get("x-real-ip");
+  if (real) return real.trim();
+  const cf = req.headers.get("cf-connecting-ip");
+  if (cf) return cf.trim();
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/contract — list recent
 // ---------------------------------------------------------------------------
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
@@ -32,8 +49,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     select: {
       id: true,
       jurisdiction: true,
-      language: true,
+      jurisdictionLanguage: true,
+      bridgeLanguage: true,
+      uiLanguage: true,
       type: true,
+      uiLanguageAcceptedAt: true,
+      acceptedByUserId: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -42,7 +63,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 }
 
 // ---------------------------------------------------------------------------
-// POST — initial generation
+// POST /api/contract — Holy Trinity generation + audit-trail capture
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -54,13 +75,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       { status: 400 },
     );
   }
-  const { jurisdiction, language, type, inputs } = parsed.data;
+  const {
+    jurisdiction,
+    jurisdictionLanguage,
+    bridgeLanguage,
+    uiLanguage,
+    type,
+    inputs,
+    acceptedByUserId,
+  } = parsed.data;
+
+  const ip = clientIp(req);
 
   let docResult;
   try {
     docResult = await generateInitialContract({
       jurisdiction,
-      language,
+      jurisdictionLanguage,
+      bridgeLanguage,
+      uiLanguage,
       type,
       inputs,
       prisma,
@@ -69,7 +102,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     await logUsage({
       operation: "GENERATE",
       jurisdiction,
-      language,
+      languageEnum: isoToEnum(jurisdictionLanguage) ?? "EN",
       type,
       sectionId: null,
       contractId: null,
@@ -86,10 +119,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const saved = await prisma.contract.create({
     data: {
       jurisdiction,
-      language,
+      jurisdictionLanguage,
+      bridgeLanguage,
+      uiLanguage,
       type,
       metadata: docResult.document.metadata as unknown as Prisma.InputJsonValue,
       sections: docResult.document.sections as unknown as Prisma.InputJsonValue,
+      // If the consumer passed an authenticated user id we record acceptance
+      // immediately. Otherwise the dedicated PUT acceptance endpoint can
+      // record it later when the user clicks the consent button.
+      acceptedByUserId: acceptedByUserId ?? null,
+      uiLanguageAcceptedAt: acceptedByUserId ? new Date() : null,
+      userIpAddress: ip,
     },
     select: { id: true, createdAt: true },
   });
@@ -97,7 +138,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   await logUsage({
     operation: "GENERATE",
     jurisdiction,
-    language,
+    languageEnum: isoToEnum(jurisdictionLanguage) ?? "EN",
     type,
     sectionId: null,
     contractId: saved.id,
@@ -111,14 +152,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       id: saved.id,
       createdAt: saved.createdAt,
       document: docResult.document,
-      usage: { ...docResult.usage, costUsd: computeCostUsd(docResult.usage.inputTokens, docResult.usage.outputTokens) },
+      usage: {
+        ...docResult.usage,
+        costUsd: computeCostUsd(docResult.usage.inputTokens, docResult.usage.outputTokens),
+      },
     },
     { status: 201 },
   );
 }
 
 // ---------------------------------------------------------------------------
-// PATCH — partial section edit
+// PATCH /api/contract — partial section edit, regenerated in all 3 languages
+// Body: { contractId, sectionId, userInstruction, acceptedByUserId? }
 // ---------------------------------------------------------------------------
 
 export async function PATCH(req: NextRequest): Promise<NextResponse> {
@@ -130,21 +175,17 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
       { status: 400 },
     );
   }
-  const { contractId, sectionId, userInstruction } = parsed.data;
+  const { contractId, sectionId, userInstruction, acceptedByUserId } = parsed.data;
 
-  const contract = await prisma.contract.findUnique({
-    where: { id: contractId },
-  });
+  const contract = await prisma.contract.findUnique({ where: { id: contractId } });
   if (!contract) {
     return NextResponse.json({ error: "Contract not found" }, { status: 404 });
   }
 
-  const sectionsParse = ContractDocumentSchema.shape.sections.safeParse(
-    contract.sections,
-  );
+  const sectionsParse = ContractDocumentSchema.shape.sections.safeParse(contract.sections);
   if (!sectionsParse.success) {
     return NextResponse.json(
-      { error: "Stored contract sections are corrupt" },
+      { error: "Stored contract sections are corrupt", issues: sectionsParse.error.issues },
       { status: 500 },
     );
   }
@@ -158,10 +199,16 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
   try {
     editResult = await editContractSection({
       jurisdiction: contract.jurisdiction,
-      language: contract.language,
+      jurisdictionLanguage: contract.jurisdictionLanguage,
+      bridgeLanguage: contract.bridgeLanguage,
+      uiLanguage: contract.uiLanguage,
       type: contract.type,
-      sectionTitle: target.title,
-      currentSectionContent: target.content,
+      sectionId,
+      current: {
+        content_legal: target.content_legal,
+        content_bridge: target.content_bridge,
+        content_ui: target.content_ui,
+      },
       userInstruction,
       prisma,
     });
@@ -169,7 +216,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     await logUsage({
       operation: "EDIT",
       jurisdiction: contract.jurisdiction,
-      language: contract.language,
+      languageEnum: isoToEnum(contract.jurisdictionLanguage) ?? "EN",
       type: contract.type,
       sectionId,
       contractId,
@@ -184,13 +231,20 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
   }
 
   const updatedSections: ContractSection[] = sections.map((s) =>
-    s.id === sectionId ? { ...s, content: editResult.content } : s,
+    s.id === sectionId ? editResult.section : s,
   );
 
+  // Editing a section invalidates a previously-recorded acceptance (the user
+  // accepted a different version of the contract). Optionally re-stamp if the
+  // caller forwarded a new userId — otherwise clear acceptance.
+  const ip = clientIp(req);
   const updated = await prisma.contract.update({
     where: { id: contractId },
     data: {
       sections: updatedSections as unknown as Prisma.InputJsonValue,
+      uiLanguageAcceptedAt: acceptedByUserId ? new Date() : null,
+      acceptedByUserId: acceptedByUserId ?? null,
+      userIpAddress: acceptedByUserId ? ip : contract.userIpAddress,
     },
     select: { id: true, updatedAt: true },
   });
@@ -198,7 +252,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
   await logUsage({
     operation: "EDIT",
     jurisdiction: contract.jurisdiction,
-    language: contract.language,
+    languageEnum: isoToEnum(contract.jurisdictionLanguage) ?? "EN",
     type: contract.type,
     sectionId,
     contractId,
@@ -210,14 +264,72 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
   return NextResponse.json({
     id: updated.id,
     updatedAt: updated.updatedAt,
-    section: { id: sectionId, title: target.title, content: editResult.content },
-    usage: { ...editResult.usage, costUsd: computeCostUsd(editResult.usage.inputTokens, editResult.usage.outputTokens) },
+    section: editResult.section,
+    usage: {
+      ...editResult.usage,
+      costUsd: computeCostUsd(editResult.usage.inputTokens, editResult.usage.outputTokens),
+    },
   });
+}
+
+// ---------------------------------------------------------------------------
+// PUT /api/contract — record user acceptance (audit trail only)
+// Body: { contractId, acceptedByUserId }
+// IP is captured from request headers.
+// ---------------------------------------------------------------------------
+
+export async function PUT(req: NextRequest): Promise<NextResponse> {
+  const body = await req.json().catch(() => null);
+  const parsed = AcceptRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: "Invalid request", issues: parsed.error.issues },
+      { status: 400 },
+    );
+  }
+  const { contractId, acceptedByUserId } = parsed.data;
+  const ip = clientIp(req);
+
+  try {
+    const updated = await prisma.contract.update({
+      where: { id: contractId },
+      data: {
+        uiLanguageAcceptedAt: new Date(),
+        acceptedByUserId,
+        userIpAddress: ip,
+      },
+      select: {
+        id: true,
+        uiLanguageAcceptedAt: true,
+        acceptedByUserId: true,
+        userIpAddress: true,
+      },
+    });
+    return NextResponse.json({ acceptance: updated });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {
+      return NextResponse.json({ error: "Contract not found" }, { status: 404 });
+    }
+    return NextResponse.json(
+      { error: "Acceptance failed", detail: (e as Error).message },
+      { status: 500 },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
+
+function isoToEnum(iso: string): "HE" | "EN" | "RU" | "AR" | null {
+  switch (iso.toLowerCase().split("-")[0]) {
+    case "he": return "HE";
+    case "en": return "EN";
+    case "ru": return "RU";
+    case "ar": return "AR";
+    default:   return null;
+  }
+}
 
 function emptyUsage(): UsageInfo {
   return {
@@ -232,7 +344,7 @@ function emptyUsage(): UsageInfo {
 async function logUsage(args: {
   operation: "GENERATE" | "EDIT";
   jurisdiction: string;
-  language: "HE" | "EN" | "RU" | "AR";
+  languageEnum: "HE" | "EN" | "RU" | "AR";
   type: "ANNUAL" | "SUBLET" | "MANAGEMENT";
   sectionId: string | null;
   contractId: string | null;
@@ -240,13 +352,15 @@ async function logUsage(args: {
   status: "OK" | "ERROR";
   error: string | null;
 }): Promise<void> {
+  // Ensure ContractSectionSchema reference is kept for tree-shaking
+  void ContractSectionSchema;
   const cost = computeCostUsd(args.usage.inputTokens, args.usage.outputTokens);
   try {
     await prisma.usageLog.create({
       data: {
         operation: args.operation,
         jurisdiction: args.jurisdiction,
-        language: args.language,
+        language: args.languageEnum,
         type: args.type,
         sectionId: args.sectionId,
         contractId: args.contractId,
@@ -261,6 +375,6 @@ async function logUsage(args: {
       },
     });
   } catch {
-    // logging is best-effort; never fail the user request because the log failed
+    // best-effort
   }
 }

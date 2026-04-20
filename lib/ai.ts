@@ -2,10 +2,13 @@ import { ChatOllama } from "@langchain/ollama";
 import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { BaseMessage, MessageContent } from "@langchain/core/messages";
 import type { PrismaClient, ContractType, Language } from "@prisma/client";
+import { z } from "zod";
 
 import {
   ContractDocumentSchema,
+  ContractSectionSchema,
   type ContractDocument,
+  type ContractSection,
 } from "./schemas";
 import {
   SYSTEM_GENERATE,
@@ -15,6 +18,7 @@ import {
   buildEditPrompt,
   buildExtractPrompt,
   type ConstraintRow,
+  type GlossaryRow,
   type TemplateRef,
 } from "./prompts";
 
@@ -38,7 +42,7 @@ const textModel = new ChatOllama({
 });
 
 // ---------------------------------------------------------------------------
-// Types
+// Public types
 // ---------------------------------------------------------------------------
 
 export interface UsageInfo {
@@ -55,27 +59,43 @@ export interface GenerationResult {
 }
 
 export interface EditResult {
-  content: string;
+  section: ContractSection;
   usage: UsageInfo;
 }
 
 // ---------------------------------------------------------------------------
-// Constraint loader
+// Constraint / glossary / template loaders
 // ---------------------------------------------------------------------------
+
+/**
+ * Map ISO 639-1 lowercase code -> our internal Language enum, where a match
+ * exists. Used to scope LegalConstraint rows since that table still keys on
+ * the enum.
+ */
+function isoToEnum(iso: string): Language | null {
+  switch (iso.toLowerCase().split("-")[0]) {
+    case "he": return "HE";
+    case "en": return "EN";
+    case "ru": return "RU";
+    case "ar": return "AR";
+    default:   return null;
+  }
+}
 
 export async function fetchConstraints(
   prisma: PrismaClient,
   jurisdiction: string,
   type: ContractType,
-  language: Language,
+  jurisdictionLanguage: string,
 ): Promise<ConstraintRow[]> {
+  const langEnum = isoToEnum(jurisdictionLanguage);
   return prisma.legalConstraint.findMany({
     where: {
       isActive: true,
       jurisdiction,
       AND: [
         { OR: [{ type: null }, { type }] },
-        { OR: [{ language: null }, { language }] },
+        langEnum ? { OR: [{ language: null }, { language: langEnum }] } : {},
       ],
     },
     orderBy: [{ priority: "desc" }, { createdAt: "asc" }],
@@ -83,13 +103,90 @@ export async function fetchConstraints(
   });
 }
 
+export async function fetchGlossary(
+  prisma: PrismaClient,
+  jurisdiction: string,
+  languages: string[],
+): Promise<GlossaryRow[]> {
+  if (languages.length === 0) return [];
+  return prisma.glossary.findMany({
+    where: {
+      isActive: true,
+      jurisdiction,
+      language: { in: languages },
+    },
+    orderBy: [{ term: "asc" }, { language: "asc" }],
+    select: { term: true, language: true, rigidValue: true, notes: true },
+  });
+}
+
+const TEMPLATE_INJECTION_COUNT = Number(process.env.TEMPLATE_INJECTION_COUNT ?? 3);
+
+export async function fetchExemplarTemplates(
+  prisma: PrismaClient,
+  jurisdiction: string,
+  type: ContractType,
+  jurisdictionLanguage: string,
+): Promise<TemplateRef[]> {
+  const langEnum = isoToEnum(jurisdictionLanguage);
+  // Templates are stored in our Language enum; if the requested
+  // jurisdictionLanguage doesn't map to an enum value we can't filter by it.
+  const all = await prisma.contractTemplate.findMany({
+    where: {
+      isActive: true,
+      jurisdiction,
+      type,
+      ...(langEnum ? { language: langEnum } : {}),
+    },
+    orderBy: { priority: "desc" },
+    select: { title: true, language: true, sections: true },
+  });
+  if (all.length === 0) return [];
+
+  const picked =
+    all.length <= TEMPLATE_INJECTION_COUNT
+      ? all
+      : sampleN(all, TEMPLATE_INJECTION_COUNT);
+
+  return picked
+    .map((row) => {
+      const parsed = LegacySectionsSchema.safeParse(row.sections);
+      if (!parsed.success) return null;
+      return {
+        title: row.title,
+        language: row.language.toLowerCase(),
+        sections: parsed.data,
+      };
+    })
+    .filter((t): t is TemplateRef => t !== null);
+}
+
+const LegacySectionsSchema = z.array(
+  z.object({
+    id: z.string().min(1),
+    title: z.string().min(1),
+    content: z.string().min(1),
+  }),
+);
+
+function sampleN<T>(arr: T[], n: number): T[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a.slice(0, n);
+}
+
 // ---------------------------------------------------------------------------
-// Generate
+// Generate — Holy Trinity output
 // ---------------------------------------------------------------------------
 
 export interface GenerateInput {
   jurisdiction: string;
-  language: Language;
+  jurisdictionLanguage: string;
+  bridgeLanguage: string;
+  uiLanguage: string;
   type: ContractType;
   inputs: Record<string, unknown>;
   prisma: PrismaClient;
@@ -98,17 +195,25 @@ export interface GenerateInput {
 export async function generateInitialContract(
   input: GenerateInput,
 ): Promise<GenerationResult> {
-  const [constraints, templates] = await Promise.all([
-    fetchConstraints(input.prisma, input.jurisdiction, input.type, input.language),
-    fetchExemplarTemplates(input.prisma, input.jurisdiction, input.type, input.language),
+  const [constraints, glossary, templates] = await Promise.all([
+    fetchConstraints(input.prisma, input.jurisdiction, input.type, input.jurisdictionLanguage),
+    fetchGlossary(input.prisma, input.jurisdiction, [
+      input.jurisdictionLanguage,
+      input.bridgeLanguage,
+      input.uiLanguage,
+    ]),
+    fetchExemplarTemplates(input.prisma, input.jurisdiction, input.type, input.jurisdictionLanguage),
   ]);
 
   const userPrompt = buildGeneratePrompt({
     jurisdiction: input.jurisdiction,
-    language: input.language,
+    jurisdictionLanguage: input.jurisdictionLanguage,
+    bridgeLanguage: input.bridgeLanguage,
+    uiLanguage: input.uiLanguage,
     type: input.type,
     inputs: input.inputs,
     constraints,
+    glossary,
     templates,
   });
 
@@ -120,26 +225,24 @@ export async function generateInitialContract(
   const durationMs = Date.now() - startedAt;
 
   const raw = messageContentToString(res.content);
+  const cleaned = stripJsonFences(raw);
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(cleaned);
   } catch (e) {
     throw new Error(
-      `Model returned non-JSON output: ${(e as Error).message}\n--- raw ---\n${raw}`,
+      `Model returned non-JSON output: ${(e as Error).message}\n--- raw ---\n${raw.slice(0, 500)}`,
     );
   }
 
-  if (
-    parsed &&
-    typeof parsed === "object" &&
-    "metadata" in parsed &&
-    typeof (parsed as { metadata: unknown }).metadata === "object"
-  ) {
-    (parsed as { metadata: Record<string, unknown> }).metadata = {
-      ...(parsed as { metadata: Record<string, unknown> }).metadata,
+  // Force metadata coherence — model occasionally drifts on locale strings.
+  if (parsed && typeof parsed === "object") {
+    (parsed as Record<string, unknown>).metadata = {
       jurisdiction: input.jurisdiction,
-      language: input.language,
+      jurisdictionLanguage: input.jurisdictionLanguage,
+      bridgeLanguage: input.bridgeLanguage,
+      uiLanguage: input.uiLanguage,
       type: input.type,
     };
   }
@@ -151,65 +254,104 @@ export async function generateInitialContract(
     );
   }
 
+  // Defensive: ensure language_waiver is the FINAL section. If the model
+  // emitted it earlier, move it; if missing, fail loudly.
+  const sections = [...validated.data.sections];
+  const waiverIdx = sections.findIndex((s) => s.id === "language_waiver");
+  if (waiverIdx === -1) {
+    throw new Error("Model did not emit a language_waiver section");
+  }
+  if (waiverIdx !== sections.length - 1) {
+    const [waiver] = sections.splice(waiverIdx, 1);
+    sections.push(waiver);
+  }
+
   return {
-    document: validated.data,
+    document: { metadata: validated.data.metadata, sections },
     usage: extractUsage(res, durationMs),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Edit
+// Edit — single section, regenerated in all three languages
 // ---------------------------------------------------------------------------
 
 export interface EditInput {
   jurisdiction: string;
-  language: Language;
+  jurisdictionLanguage: string;
+  bridgeLanguage: string;
+  uiLanguage: string;
   type: ContractType;
-  sectionTitle: string;
-  currentSectionContent: string;
+  sectionId: string;
+  current: { content_legal: string; content_bridge: string; content_ui: string };
   userInstruction: string;
   prisma: PrismaClient;
 }
 
 export async function editContractSection(input: EditInput): Promise<EditResult> {
-  const constraints = await fetchConstraints(
-    input.prisma,
-    input.jurisdiction,
-    input.type,
-    input.language,
-  );
+  const [constraints, glossary] = await Promise.all([
+    fetchConstraints(input.prisma, input.jurisdiction, input.type, input.jurisdictionLanguage),
+    fetchGlossary(input.prisma, input.jurisdiction, [
+      input.jurisdictionLanguage,
+      input.bridgeLanguage,
+      input.uiLanguage,
+    ]),
+  ]);
 
   const userPrompt = buildEditPrompt({
-    language: input.language,
     jurisdiction: input.jurisdiction,
-    sectionTitle: input.sectionTitle,
-    currentSectionContent: input.currentSectionContent,
+    jurisdictionLanguage: input.jurisdictionLanguage,
+    bridgeLanguage: input.bridgeLanguage,
+    uiLanguage: input.uiLanguage,
+    type: input.type,
+    sectionId: input.sectionId,
+    current: input.current,
     userInstruction: input.userInstruction,
     constraints,
+    glossary,
   });
 
   const startedAt = Date.now();
-  const res = await textModel.invoke([
+  const res = await jsonModel.invoke([
     new SystemMessage(SYSTEM_EDIT),
     new HumanMessage(userPrompt),
   ]);
   const durationMs = Date.now() - startedAt;
 
   const raw = messageContentToString(res.content);
-  const cleaned = sanitizeEditOutput(raw);
+  const cleaned = stripJsonFences(raw);
 
-  if (cleaned.length === 0) {
-    throw new Error("Model produced an empty section after sanitization");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (e) {
+    throw new Error(
+      `Model returned non-JSON output: ${(e as Error).message}\n--- raw ---\n${raw.slice(0, 500)}`,
+    );
+  }
+
+  // Force the id to match what the caller asked to edit; the model
+  // occasionally rewrites it.
+  if (parsed && typeof parsed === "object") {
+    (parsed as Record<string, unknown>).id = input.sectionId;
+  }
+
+  const validated = ContractSectionSchema.safeParse(parsed);
+  if (!validated.success) {
+    throw new Error(
+      `Edit output failed validation: ${validated.error.message}`,
+    );
   }
 
   return {
-    content: cleaned,
+    section: validated.data,
     usage: extractUsage(res, durationMs),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Template extraction (raw text → structured ContractDocument)
+// Extract — raw uploaded contract → legacy single-content sections
+// (templates remain single-content; only generated contracts are 3-column)
 // ---------------------------------------------------------------------------
 
 export interface ExtractInput {
@@ -219,8 +361,30 @@ export interface ExtractInput {
   rawText: string;
 }
 
-export async function extractTemplate(input: ExtractInput): Promise<ContractDocument> {
-  const userPrompt = buildExtractPrompt(input);
+const ExtractedDocSchema = z.object({
+  metadata: z.object({
+    jurisdiction: z.string(),
+    language: z.string(),
+    type: z.string(),
+  }),
+  sections: z.array(
+    z.object({
+      id: z.string().min(1),
+      title: z.string().min(1),
+      content: z.string().min(1),
+    }),
+  ).min(1),
+});
+
+export type ExtractedDocument = z.infer<typeof ExtractedDocSchema>;
+
+export async function extractTemplate(input: ExtractInput): Promise<ExtractedDocument> {
+  const userPrompt = buildExtractPrompt({
+    jurisdiction: input.jurisdiction,
+    language: input.language,
+    type: input.type,
+    rawText: input.rawText,
+  });
   const res = await jsonModel.invoke([
     new SystemMessage(SYSTEM_EXTRACT),
     new HumanMessage(userPrompt),
@@ -244,10 +408,6 @@ export async function extractTemplate(input: ExtractInput): Promise<ContractDocu
       language: input.language,
       type: input.type,
     };
-
-    // Drop incomplete sections — extractor sometimes emits stubs with empty
-    // content for headings it couldn't fill. Validating those would fail the
-    // whole document; pruning them lets imperfect extractions still land.
     if (Array.isArray(obj.sections)) {
       obj.sections = obj.sections.filter((s) => {
         if (!s || typeof s !== "object") return false;
@@ -264,58 +424,15 @@ export async function extractTemplate(input: ExtractInput): Promise<ContractDocu
     }
   }
 
-  const validated = ContractDocumentSchema.safeParse(parsed);
+  const validated = ExtractedDocSchema.safeParse(parsed);
   if (!validated.success) {
-    throw new Error(
-      `Extractor output failed validation: ${validated.error.message}`,
-    );
+    throw new Error(`Extractor output failed validation: ${validated.error.message}`);
   }
   return validated.data;
 }
 
 // ---------------------------------------------------------------------------
-// Exemplar template loader (random sample for prompt injection)
-// ---------------------------------------------------------------------------
-
-const TEMPLATE_INJECTION_COUNT = Number(process.env.TEMPLATE_INJECTION_COUNT ?? 3);
-
-export async function fetchExemplarTemplates(
-  prisma: PrismaClient,
-  jurisdiction: string,
-  type: ContractType,
-  language: Language,
-): Promise<TemplateRef[]> {
-  const all = await prisma.contractTemplate.findMany({
-    where: { isActive: true, jurisdiction, type, language },
-    orderBy: { priority: "desc" },
-    select: { title: true, sections: true },
-  });
-  if (all.length === 0) return [];
-
-  const picked = all.length <= TEMPLATE_INJECTION_COUNT
-    ? all
-    : sampleN(all, TEMPLATE_INJECTION_COUNT);
-
-  return picked
-    .map((row) => {
-      const parsed = ContractDocumentSchema.shape.sections.safeParse(row.sections);
-      if (!parsed.success) return null;
-      return { title: row.title, sections: parsed.data };
-    })
-    .filter((t): t is TemplateRef => t !== null);
-}
-
-function sampleN<T>(arr: T[], n: number): T[] {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a.slice(0, n);
-}
-
-// ---------------------------------------------------------------------------
-// Chat (free-form Q&A about real estate / contracts)
+// Chat (free-form Q&A) — unchanged
 // ---------------------------------------------------------------------------
 
 const SYSTEM_CHAT = `You are MyHome's real-estate assistant.
@@ -335,9 +452,7 @@ export interface ChatResult {
 }
 
 export async function chatComplete(history: ChatTurn[]): Promise<ChatResult> {
-  if (history.length === 0) {
-    throw new Error("chat history is empty");
-  }
+  if (history.length === 0) throw new Error("chat history is empty");
   const messages: BaseMessage[] = [new SystemMessage(SYSTEM_CHAT)];
   for (const turn of history) {
     messages.push(
@@ -379,7 +494,6 @@ interface UsageMetadata {
   output_tokens?: number;
   total_tokens?: number;
 }
-
 interface ResponseMetadata {
   prompt_eval_count?: number;
   eval_count?: number;
@@ -389,11 +503,9 @@ interface ResponseMetadata {
 function extractUsage(res: AIMessage, durationMs: number): UsageInfo {
   const um = (res as AIMessage & { usage_metadata?: UsageMetadata }).usage_metadata;
   const meta = (res as AIMessage & { response_metadata?: ResponseMetadata }).response_metadata;
-
   const input = um?.input_tokens ?? meta?.prompt_eval_count ?? 0;
   const output = um?.output_tokens ?? meta?.eval_count ?? 0;
   const total = um?.total_tokens ?? input + output;
-
   return {
     model: meta?.model ?? OLLAMA_MODEL,
     inputTokens: input,
@@ -405,32 +517,11 @@ function extractUsage(res: AIMessage, durationMs: number): UsageInfo {
 
 function stripJsonFences(text: string): string {
   let out = text.trim();
-  // strip ```json or ``` opening fence
   out = out.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, "");
   out = out.replace(/\n?```\s*$/, "");
-  // if model added a leading prose line before the JSON, find first { or [
   const firstBrace = out.search(/[{[]/);
   if (firstBrace > 0) out = out.slice(firstBrace);
-  // trim trailing prose after the last closing brace
   const lastBrace = Math.max(out.lastIndexOf("}"), out.lastIndexOf("]"));
   if (lastBrace >= 0 && lastBrace < out.length - 1) out = out.slice(0, lastBrace + 1);
-  return out.trim();
-}
-
-function sanitizeEditOutput(text: string): string {
-  let out = text.trim();
-  out = out.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, "");
-  out = out.replace(/\n?```\s*$/, "");
-  out = out.replace(/^"""\s*/, "").replace(/\s*"""$/, "");
-
-  const chattyHeads: RegExp[] = [
-    /^here(?:'s| is)\s+the\s+(?:revised|updated|new)[^:\n]*:\s*/i,
-    /^(?:revised|updated|new)\s+clause\s*[:\-]\s*/i,
-    /^sure[,!.\s]+/i,
-    /^certainly[,!.\s]+/i,
-    /^okay[,!.\s]+/i,
-  ];
-  for (const re of chattyHeads) out = out.replace(re, "");
-
   return out.trim();
 }

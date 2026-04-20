@@ -1,10 +1,35 @@
-import type { ContractType, Language } from "@prisma/client";
+import type { ContractType } from "@prisma/client";
+
+// ---------------------------------------------------------------------------
+// Shared building blocks
+// ---------------------------------------------------------------------------
 
 export interface ConstraintRow {
   category: string;
   rule: string;
   citation: string | null;
 }
+
+export interface GlossaryRow {
+  term: string;
+  language: string;
+  rigidValue: string;
+  notes: string | null;
+}
+
+// Templates use the legacy single-content section schema. They are reference
+// exemplars; the model uses them for structural anchoring of the
+// jurisdictionLanguage column.
+export interface TemplateRef {
+  title: string;
+  language: string; // ISO-ish code or our enum value
+  sections: { id: string; title: string; content: string }[];
+}
+
+const escapeXmlBody = (s: string): string =>
+  s.replace(/]]>/g, "]]]]><![CDATA[>");
+
+const cdata = (s: string): string => `<![CDATA[${escapeXmlBody(s)}]]>`;
 
 const formatConstraints = (rows: ConstraintRow[]): string =>
   rows.length === 0
@@ -16,141 +41,271 @@ const formatConstraints = (rows: ConstraintRow[]): string =>
         )
         .join("\n");
 
-export const SYSTEM_GENERATE = `You are a senior real-estate contract drafter and licensed paralegal AI for the MyHome platform.
-You ONLY emit a single JSON object that conforms to the schema the user describes. No prose, no markdown fences, no commentary.
-You write every "title" and "content" value in the requested LANGUAGE only — never mix languages.
-For Hebrew (HE) and Arabic (AR) write naturally right-to-left; do not insert Unicode bidi marks. The client renders direction from metadata.language.
-You ALWAYS comply with every supplied LEGAL CONSTRAINT. If a user input conflicts with a constraint, the constraint wins and the relevant section's content names the lawful limit.`;
+const formatGlossary = (rows: GlossaryRow[]): string =>
+  rows.length === 0
+    ? "(none on file)"
+    : rows
+        .map(
+          (g) =>
+            `- term="${g.term}" language="${g.language}" required_wording="${g.rigidValue}"${g.notes ? ` notes="${g.notes}"` : ""}`,
+        )
+        .join("\n");
 
-export function buildGeneratePrompt(args: {
+const formatTemplates = (refs: TemplateRef[]): string =>
+  refs.length === 0
+    ? "(none on file)"
+    : refs
+        .map(
+          (ref, i) =>
+            `--- REFERENCE ${i + 1} (language=${ref.language}) — ${ref.title} ---\n` +
+            ref.sections
+              .map((s) => `[${s.id}] ${s.title}\n${s.content}`)
+              .join("\n\n"),
+        )
+        .join("\n\n");
+
+// ===========================================================================
+// GENERATE — full contract authoring (3-language native composition)
+// ===========================================================================
+
+export const SYSTEM_GENERATE = `<role>
+You are MyHome's senior real-estate contract drafter and licensed paralegal AI.
+You author contracts NATIVELY in three languages simultaneously. You never
+machine-translate; each column is composed in its own native legal style.
+</role>
+
+<output_rules>
+- Emit EXACTLY ONE valid JSON object that matches <output_schema>.
+- No prose, no markdown fences, no commentary, no apology, no preamble.
+- Every section MUST contain content_legal, content_bridge, and content_ui.
+- content_legal is composed in the jurisdiction_language using its native
+  legal register and standard local boilerplate.
+- content_bridge is composed in the bridge_language using its native legal
+  register — NOT a literal translation of content_legal.
+- content_ui is composed in the ui_language as a clean, plain reader-friendly
+  rendering of the same clause.
+- Hebrew (he) and Arabic (ar) are written naturally right-to-left without
+  any inserted Unicode bidi marks; clients render direction from metadata.
+- Honor every <legal_constraint> with absolute priority. If a user input
+  conflicts with a constraint, the constraint wins and the relevant section's
+  content names the lawful limit.
+- Use any <glossary> entry's required_wording verbatim wherever the
+  underlying concept appears in the matching language column.
+- Use <reference_templates> for structural anchoring and tone, NEVER copy
+  verbatim. Adapt to the user's specifics.
+- The FINAL section MUST be id="language_waiver" — see
+  <language_waiver_requirements>.
+</output_rules>`;
+
+export interface BuildGenerateArgs {
   jurisdiction: string;
-  language: Language;
+  jurisdictionLanguage: string;
+  bridgeLanguage: string;
+  uiLanguage: string;
   type: ContractType;
   inputs: Record<string, unknown>;
   constraints: ConstraintRow[];
-  templates?: TemplateRef[];
-}): string {
-  const templatesBlock = args.templates && args.templates.length > 0
-    ? `\nREFERENCE TEMPLATES (model your structure and tone on these — do NOT copy verbatim, adapt to the user's specifics):\n${formatTemplatesBlock(args.templates)}\n`
-    : "";
+  glossary: GlossaryRow[];
+  templates: TemplateRef[];
+}
 
-  return `Draft a ${args.type} real-estate contract.
+export function buildGeneratePrompt(args: BuildGenerateArgs): string {
+  return `<task>generate_contract</task>
 
-JURISDICTION: ${args.jurisdiction}
-LANGUAGE: ${args.language}
+<jurisdiction>${args.jurisdiction}</jurisdiction>
+<contract_type>${args.type}</contract_type>
+<jurisdiction_language>${args.jurisdictionLanguage}</jurisdiction_language>
+<bridge_language>${args.bridgeLanguage}</bridge_language>
+<ui_language>${args.uiLanguage}</ui_language>
 
-USER INPUTS (JSON):
-${JSON.stringify(args.inputs, null, 2)}
-${templatesBlock}
-LEGAL CONSTRAINTS (binding):
-${formatConstraints(args.constraints)}
+<inputs>
+${cdata(JSON.stringify(args.inputs, null, 2))}
+</inputs>
 
-Return JSON with EXACTLY this shape:
+<legal_constraints>
+${cdata(formatConstraints(args.constraints))}
+</legal_constraints>
+
+<glossary>
+${cdata(formatGlossary(args.glossary))}
+</glossary>
+
+<reference_templates>
+${cdata(formatTemplates(args.templates))}
+</reference_templates>
+
+<required_section_ids>
+header, parties, property, term, payment, deposit, utilities, maintenance, termination, governing_law, signatures, language_waiver
+</required_section_ids>
+<additional_sections_allowed>
+Add additional snake_case sections only if the contract type or a constraint requires them (e.g. "guarantor", "indexation", "early_termination").
+</additional_sections_allowed>
+
+<language_waiver_requirements>
+The FINAL section MUST be id="language_waiver".
+- content_legal (in ${args.jurisdictionLanguage}) and content_bridge (in ${args.bridgeLanguage}) MUST explicitly state, in their respective native legal registers:
+  1. The parties have read and understood this agreement.
+  2. They voluntarily waive the right to a sworn translator.
+  3. They acknowledge that the ${args.jurisdictionLanguage} version GOVERNS in case of any dispute.
+  4. The ${args.bridgeLanguage} version is provided for the parties' mutual convenience and has no independent legal force.
+- content_ui (in ${args.uiLanguage}) repeats the same substance in plain reader language.
+</language_waiver_requirements>
+
+<output_schema>
 {
-  "metadata": { "jurisdiction": "<string>", "language": "<HE|EN|RU|AR>", "type": "<ANNUAL|SUBLET|MANAGEMENT>" },
+  "metadata": {
+    "jurisdiction": "${args.jurisdiction}",
+    "jurisdictionLanguage": "${args.jurisdictionLanguage}",
+    "bridgeLanguage": "${args.bridgeLanguage}",
+    "uiLanguage": "${args.uiLanguage}",
+    "type": "${args.type}"
+  },
   "sections": [
-    { "id": "<stable_snake_case_id>", "title": "<localized title>", "content": "<full clause body>" }
+    {
+      "id": "<snake_case_id>",
+      "content_legal": "<full clause body in ${args.jurisdictionLanguage}>",
+      "content_bridge": "<full clause body in ${args.bridgeLanguage}>",
+      "content_ui": "<plain clause body in ${args.uiLanguage}>"
+    }
   ]
 }
+</output_schema>
 
-Required section ids in this order:
-header, parties, property, term, payment, deposit, utilities, maintenance, termination, governing_law, signatures.
-
-Add additional snake_case sections only if the contract type or a constraint requires them.
-The metadata block MUST echo the requested jurisdiction, language, and type verbatim.`;
+Emit the JSON now.`;
 }
 
-export const SYSTEM_EDIT = `You revise ONE clause of an existing real-estate contract for MyHome.
-Output rules — non-negotiable:
-- Output ONLY the new clause body as plain text.
-- No preamble, no apology, no explanation, no JSON, no markdown fences, no labels, no signature lines, no quotes around the output.
-- Do NOT begin with phrases like "Here is", "Sure", "Revised clause:", or restate the title.
-- Preserve the original LANGUAGE and natural writing direction (RTL for HE/AR, LTR for EN/RU).
-- Keep the clause fully compliant with every supplied LEGAL CONSTRAINT. If the user instruction conflicts with a constraint, follow the constraint and emit the lawful version.
-- If the instruction is ambiguous, choose the most legally conservative interpretation. Do not invent facts not present in the original clause or the instruction.`;
+// ===========================================================================
+// EDIT — single-section partial update with 3-language regeneration
+// ===========================================================================
 
-// ---------------------------------------------------------------------------
-// Template extraction (raw contract text → structured sections)
-// ---------------------------------------------------------------------------
+export const SYSTEM_EDIT = `<role>
+You revise ONE clause of an existing real-estate contract for MyHome.
+You regenerate the clause in all three languages simultaneously.
+</role>
 
-export const SYSTEM_EXTRACT = `You are a legal document parser.
-Given the full text of a real-estate contract, you split it into clean labeled sections.
-You ONLY emit a single JSON object — no prose, no markdown, no commentary.
-Preserve the original wording verbatim where possible; only normalize whitespace.
-Write each section's "title" in the same language as the source contract.
-If a standard section is not present in the source, omit it entirely — do not invent.`;
+<output_rules>
+- Emit EXACTLY ONE valid JSON object: { "id", "content_legal", "content_bridge", "content_ui" }.
+- No prose, no markdown fences, no commentary, no preamble like "Here is".
+- Preserve the section's id verbatim from <section_id>.
+- Compose each language column natively, NOT by translating another column.
+- Honor every <legal_constraint>. If the <user_instruction> conflicts with a
+  constraint, follow the constraint and emit the lawful version. Do not
+  apologize — silently produce the compliant clause.
+- Use <glossary> required_wording verbatim wherever the concept appears in
+  the matching language column.
+- The <user_instruction> may be written in any language (often the
+  ui_language). Understand its intent and apply it consistently across all
+  three columns.
+- Hebrew/Arabic are written right-to-left without bidi marks.
+- Do not invent facts not present in the current clause or the instruction.
+</output_rules>`;
+
+export interface BuildEditArgs {
+  jurisdiction: string;
+  jurisdictionLanguage: string;
+  bridgeLanguage: string;
+  uiLanguage: string;
+  type: ContractType;
+  sectionId: string;
+  current: { content_legal: string; content_bridge: string; content_ui: string };
+  userInstruction: string;
+  constraints: ConstraintRow[];
+  glossary: GlossaryRow[];
+}
+
+export function buildEditPrompt(args: BuildEditArgs): string {
+  return `<task>edit_section</task>
+
+<jurisdiction>${args.jurisdiction}</jurisdiction>
+<contract_type>${args.type}</contract_type>
+<jurisdiction_language>${args.jurisdictionLanguage}</jurisdiction_language>
+<bridge_language>${args.bridgeLanguage}</bridge_language>
+<ui_language>${args.uiLanguage}</ui_language>
+
+<section_id>${args.sectionId}</section_id>
+
+<current_clause>
+  <content_legal language="${args.jurisdictionLanguage}">
+${cdata(args.current.content_legal)}
+  </content_legal>
+  <content_bridge language="${args.bridgeLanguage}">
+${cdata(args.current.content_bridge)}
+  </content_bridge>
+  <content_ui language="${args.uiLanguage}">
+${cdata(args.current.content_ui)}
+  </content_ui>
+</current_clause>
+
+<user_instruction>
+${cdata(args.userInstruction)}
+</user_instruction>
+
+<legal_constraints>
+${cdata(formatConstraints(args.constraints))}
+</legal_constraints>
+
+<glossary>
+${cdata(formatGlossary(args.glossary))}
+</glossary>
+
+<output_schema>
+{
+  "id": "${args.sectionId}",
+  "content_legal": "<revised clause body in ${args.jurisdictionLanguage}>",
+  "content_bridge": "<revised clause body in ${args.bridgeLanguage}>",
+  "content_ui": "<revised clause body in ${args.uiLanguage}>"
+}
+</output_schema>
+
+Emit the JSON now.`;
+}
+
+// ===========================================================================
+// EXTRACT — raw uploaded contract → structured single-content sections.
+// (Templates remain single-content; only generated Contracts are 3-column.)
+// ===========================================================================
+
+export const SYSTEM_EXTRACT = `<role>
+You are a legal document parser.
+</role>
+<output_rules>
+- Emit EXACTLY ONE valid JSON object — no prose, no markdown.
+- Preserve the source wording verbatim where possible; only normalize whitespace.
+- Title each section in the same language as the source.
+- If a standard section is not present in the source, omit it — do not invent.
+</output_rules>`;
 
 export function buildExtractPrompt(args: {
   jurisdiction: string;
-  language: Language;
+  language: string;
   type: ContractType;
   rawText: string;
 }): string {
-  return `Parse the following ${args.language} ${args.type} real-estate contract from ${args.jurisdiction} into structured sections.
+  return `<task>parse_contract</task>
 
-Return JSON with EXACTLY this shape:
+<jurisdiction>${args.jurisdiction}</jurisdiction>
+<source_language>${args.language}</source_language>
+<contract_type>${args.type}</contract_type>
+
+<source_text>
+${cdata(args.rawText)}
+</source_text>
+
+<output_schema>
 {
   "metadata": { "jurisdiction": "${args.jurisdiction}", "language": "${args.language}", "type": "${args.type}" },
   "sections": [
     { "id": "<snake_case_id>", "title": "<localized title from source>", "content": "<verbatim clause text>" }
   ]
 }
+</output_schema>
 
-Use these stable section ids when the corresponding content exists in the source:
-header, parties, property, term, payment, deposit, utilities, maintenance, termination, governing_law, signatures.
-Add additional snake_case sections for anything else present in the source (e.g. "guarantor", "indexation", "early_termination", "late_fees").
+<preferred_section_ids>
+header, parties, property, term, payment, deposit, utilities, maintenance, termination, governing_law, signatures
+</preferred_section_ids>
+<additional_sections_allowed>
+Use additional snake_case ids for anything else present in the source (e.g. "guarantor", "indexation", "early_termination", "late_fees").
+</additional_sections_allowed>
 
-CONTRACT TEXT:
-"""
-${args.rawText}
-"""`;
-}
-
-// ---------------------------------------------------------------------------
-// Reference-template injection block (used inside buildGeneratePrompt)
-// ---------------------------------------------------------------------------
-
-export interface TemplateRef {
-  title: string;
-  sections: { id: string; title: string; content: string }[];
-}
-
-export function formatTemplatesBlock(refs: TemplateRef[]): string {
-  if (refs.length === 0) return "(none on file)";
-  return refs
-    .map((ref, i) => {
-      const body = ref.sections
-        .map((s) => `  [${s.id}] ${s.title}\n  ${s.content.replace(/\n/g, "\n  ")}`)
-        .join("\n");
-      return `--- REFERENCE ${i + 1}: ${ref.title} ---\n${body}`;
-    })
-    .join("\n\n");
-}
-
-export function buildEditPrompt(args: {
-  language: Language;
-  jurisdiction: string;
-  sectionTitle: string;
-  currentSectionContent: string;
-  userInstruction: string;
-  constraints: ConstraintRow[];
-}): string {
-  return `LANGUAGE: ${args.language}
-JURISDICTION: ${args.jurisdiction}
-CLAUSE TITLE: ${args.sectionTitle}
-
-CURRENT CLAUSE:
-"""
-${args.currentSectionContent}
-"""
-
-USER INSTRUCTION:
-"""
-${args.userInstruction}
-"""
-
-LEGAL CONSTRAINTS (binding):
-${formatConstraints(args.constraints)}
-
-Emit the revised clause body now. Nothing else.`;
+Emit the JSON now.`;
 }

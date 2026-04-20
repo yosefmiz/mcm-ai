@@ -3,14 +3,14 @@
 import { useState } from "react";
 import { useT } from "../components/LocaleProvider";
 
-type Lang = "HE" | "EN" | "RU" | "AR";
 type Ctype = "ANNUAL" | "SUBLET" | "MANAGEMENT";
-const RTL: ReadonlySet<Lang> = new Set(["HE", "AR"]);
+const RTL = new Set(["he", "ar"]);
 
 interface Section {
   id: string;
-  title: string;
-  content: string;
+  content_legal: string;
+  content_bridge: string;
+  content_ui: string;
 }
 interface Usage {
   inputTokens: number;
@@ -23,7 +23,13 @@ interface Usage {
 interface GenResponse {
   id: string;
   document: {
-    metadata: { jurisdiction: string; language: Lang; type: Ctype };
+    metadata: {
+      jurisdiction: string;
+      jurisdictionLanguage: string;
+      bridgeLanguage: string;
+      uiLanguage: string;
+      type: Ctype;
+    };
     sections: Section[];
   };
   usage: Usage;
@@ -48,10 +54,14 @@ const DEFAULT_INPUTS = JSON.stringify(
   2,
 );
 
+type ColumnKey = "ui" | "legal" | "bridge";
+
 export default function Playground() {
   const t = useT();
   const [jurisdiction, setJurisdiction] = useState("NY, US");
-  const [language, setLanguage] = useState<Lang>("EN");
+  const [jurisdictionLanguage, setJL] = useState("en");
+  const [bridgeLanguage, setBL] = useState("en");
+  const [uiLang, setUL] = useState("en");
   const [type, setType] = useState<Ctype>("ANNUAL");
   const [inputsText, setInputsText] = useState(DEFAULT_INPUTS);
 
@@ -60,6 +70,7 @@ export default function Playground() {
   const [contract, setContract] = useState<GenResponse | null>(null);
   const [usage, setUsage] = useState<Usage | null>(null);
 
+  const [activeColumn, setActiveColumn] = useState<ColumnKey>("ui");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editInstruction, setEditInstruction] = useState("");
   const [editBusy, setEditBusy] = useState(false);
@@ -78,7 +89,14 @@ export default function Playground() {
       const res = await fetch("/api/contract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jurisdiction, language, type, inputs }),
+        body: JSON.stringify({
+          jurisdiction,
+          jurisdictionLanguage,
+          bridgeLanguage,
+          uiLanguage: uiLang,
+          type,
+          inputs,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Request failed");
@@ -128,7 +146,21 @@ export default function Playground() {
     }
   }
 
-  const dir = RTL.has(language) ? "rtl" : "ltr";
+  const meta = contract?.document.metadata;
+  const colLang = meta
+    ? activeColumn === "legal"
+      ? meta.jurisdictionLanguage
+      : activeColumn === "bridge"
+        ? meta.bridgeLanguage
+        : meta.uiLanguage
+    : "en";
+  const dir = RTL.has(colLang.toLowerCase().split("-")[0]) ? "rtl" : "ltr";
+
+  function columnContent(s: Section): string {
+    if (activeColumn === "legal") return s.content_legal;
+    if (activeColumn === "bridge") return s.content_bridge;
+    return s.content_ui;
+  }
 
   return (
     <main>
@@ -142,18 +174,9 @@ export default function Playground() {
             <input
               value={jurisdiction}
               onChange={(e) => setJurisdiction(e.target.value)}
-              placeholder="NY, US / IL / DE-BE"
+              placeholder="NY, US / IL / DE-BE / GR"
               required
             />
-          </div>
-          <div>
-            <label>{t.playground.language}</label>
-            <select value={language} onChange={(e) => setLanguage(e.target.value as Lang)}>
-              <option value="EN">English</option>
-              <option value="HE">עברית</option>
-              <option value="RU">Русский</option>
-              <option value="AR">العربية</option>
-            </select>
           </div>
           <div>
             <label>{t.playground.type}</label>
@@ -163,7 +186,24 @@ export default function Playground() {
               <option value="MANAGEMENT">{t.playground.typeManagement}</option>
             </select>
           </div>
+          <div />
         </div>
+
+        <div className="grid-3" style={{ marginTop: "0.75rem" }}>
+          <div>
+            <label>Jurisdiction language (legal, binding)</label>
+            <input value={jurisdictionLanguage} onChange={(e) => setJL(e.target.value)} placeholder="en / he / el / de" required />
+          </div>
+          <div>
+            <label>Bridge language (parties&apos; common)</label>
+            <input value={bridgeLanguage} onChange={(e) => setBL(e.target.value)} placeholder="en / he / ru" required />
+          </div>
+          <div>
+            <label>UI language (convenience)</label>
+            <input value={uiLang} onChange={(e) => setUL(e.target.value)} placeholder="en / he / ru / ar" required />
+          </div>
+        </div>
+
         <div style={{ marginTop: "0.75rem" }}>
           <label>{t.playground.inputsJson}</label>
           <textarea value={inputsText} onChange={(e) => setInputsText(e.target.value)} />
@@ -212,18 +252,35 @@ export default function Playground() {
         </div>
       )}
 
-      {contract && (
+      {contract && meta && (
         <>
-          <h2>{t.playground.sectionsFor} {contract.id.slice(0, 10)}…</h2>
+          <h2 style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+            <span>{t.playground.sectionsFor} {contract.id.slice(0, 10)}…</span>
+            <span className="row" style={{ gap: "0.25rem" }}>
+              <button
+                className={activeColumn === "ui" ? "" : "ghost"}
+                onClick={() => setActiveColumn("ui")}
+                type="button"
+              >UI · {meta.uiLanguage}</button>
+              <button
+                className={activeColumn === "legal" ? "" : "ghost"}
+                onClick={() => setActiveColumn("legal")}
+                type="button"
+              >Legal · {meta.jurisdictionLanguage}</button>
+              <button
+                className={activeColumn === "bridge" ? "" : "ghost"}
+                onClick={() => setActiveColumn("bridge")}
+                type="button"
+              >Bridge · {meta.bridgeLanguage}</button>
+            </span>
+          </h2>
+
           <div dir={dir}>
             {contract.document.sections.map((s) => (
               <div className="section-card" key={s.id}>
                 <header>
                   <h4>
-                    {s.title}{" "}
-                    <span className="muted mono" style={{ fontSize: "0.75rem", marginInlineStart: "0.5rem" }}>
-                      {s.id}
-                    </span>
+                    <span className="mono" style={{ fontSize: "0.85rem" }}>{s.id}</span>
                   </h4>
                   <button
                     className="ghost"
@@ -235,7 +292,7 @@ export default function Playground() {
                     {editingId === s.id ? t.playground.cancel : t.playground.edit}
                   </button>
                 </header>
-                <div className="section-content">{s.content}</div>
+                <div className="section-content">{columnContent(s)}</div>
                 {editingId === s.id && (
                   <div style={{ marginTop: "0.75rem" }}>
                     <label>{t.playground.editInstruction}</label>

@@ -5,21 +5,43 @@ import { useEffect, useState } from "react";
 import { use } from "react";
 import { useT } from "../../components/LocaleProvider";
 
-const RTL = new Set(["HE", "AR"]);
+const RTL = new Set(["he", "ar"]);
 
-interface Section { id: string; title: string; content: string }
+interface Section {
+  id: string;
+  content_legal: string;
+  content_bridge: string;
+  content_ui: string;
+}
 interface UsageLog {
-  id: string; operation: string; sectionId: string | null;
-  inputTokens: number; outputTokens: number; durationMs: number;
-  costUsd: string | number; status: string; createdAt: string;
+  id: string;
+  operation: string;
+  sectionId: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  costUsd: string | number;
+  status: string;
+  createdAt: string;
 }
 interface Contract {
-  id: string; jurisdiction: string; language: string; type: string;
+  id: string;
+  jurisdiction: string;
+  type: string;
+  jurisdictionLanguage: string;
+  bridgeLanguage: string;
+  uiLanguage: string;
   metadata: unknown;
   sections: Section[];
-  createdAt: string; updatedAt: string;
+  uiLanguageAcceptedAt: string | null;
+  acceptedByUserId: string | null;
+  userIpAddress: string | null;
+  createdAt: string;
+  updatedAt: string;
   usageLogs?: UsageLog[];
 }
+
+type ColumnKey = "ui" | "legal" | "bridge";
 
 export default function ContractDetailPage({
   params,
@@ -30,6 +52,7 @@ export default function ContractDetailPage({
   const t = useT();
   const [contract, setContract] = useState<Contract | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeColumn, setActiveColumn] = useState<ColumnKey>("ui");
 
   useEffect(() => {
     let canceled = false;
@@ -68,9 +91,21 @@ export default function ContractDetailPage({
     );
   }
 
-  const dir = RTL.has(contract.language) ? "rtl" : "ltr";
+  const colLang =
+    activeColumn === "legal"
+      ? contract.jurisdictionLanguage
+      : activeColumn === "bridge"
+        ? contract.bridgeLanguage
+        : contract.uiLanguage;
+  const dir = RTL.has(colLang.toLowerCase().split("-")[0]) ? "rtl" : "ltr";
   const sections = Array.isArray(contract.sections) ? contract.sections : [];
   const logs = contract.usageLogs ?? [];
+
+  function colContent(s: Section): string {
+    if (activeColumn === "legal") return s.content_legal;
+    if (activeColumn === "bridge") return s.content_bridge;
+    return s.content_ui;
+  }
 
   return (
     <main>
@@ -80,22 +115,50 @@ export default function ContractDetailPage({
         <span className="mono" style={{ fontSize: "1rem" }}>{contract.id}</span>
       </h1>
       <p className="muted">
-        {contract.type} · {contract.language} · {contract.jurisdiction} · {new Date(contract.createdAt).toISOString().slice(0, 19).replace("T", " ")}
+        {contract.type} · {contract.jurisdiction} · jurisdiction <strong>{contract.jurisdictionLanguage}</strong> · bridge <strong>{contract.bridgeLanguage}</strong> · UI <strong>{contract.uiLanguage}</strong> · {new Date(contract.createdAt).toISOString().slice(0, 19).replace("T", " ")}
       </p>
 
-      <h2>{t.history.sectionsHeading}</h2>
+      {contract.uiLanguageAcceptedAt && (
+        <div className="card" style={{ marginTop: "0.5rem", borderColor: "var(--ok)" }}>
+          <strong style={{ color: "var(--ok)" }}>Accepted</strong>
+          <p className="muted" style={{ fontSize: "0.85rem" }}>
+            user <span className="mono">{contract.acceptedByUserId ?? "—"}</span>
+            {" · "}IP <span className="mono">{contract.userIpAddress ?? "—"}</span>
+            {" · "}at {new Date(contract.uiLanguageAcceptedAt).toISOString().slice(0, 19).replace("T", " ")}
+          </p>
+        </div>
+      )}
+
+      <h2 style={{ display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+        <span>{t.history.sectionsHeading}</span>
+        <span className="row" style={{ gap: "0.25rem" }}>
+          <button
+            className={activeColumn === "ui" ? "" : "ghost"}
+            onClick={() => setActiveColumn("ui")}
+            type="button"
+          >UI · {contract.uiLanguage}</button>
+          <button
+            className={activeColumn === "legal" ? "" : "ghost"}
+            onClick={() => setActiveColumn("legal")}
+            type="button"
+          >Legal · {contract.jurisdictionLanguage}</button>
+          <button
+            className={activeColumn === "bridge" ? "" : "ghost"}
+            onClick={() => setActiveColumn("bridge")}
+            type="button"
+          >Bridge · {contract.bridgeLanguage}</button>
+        </span>
+      </h2>
+
       <div dir={dir}>
         {sections.map((s) => (
           <div className="section-card" key={s.id}>
             <header>
               <h4>
-                {s.title}{" "}
-                <span className="muted mono" style={{ fontSize: "0.75rem", marginInlineStart: "0.5rem" }}>
-                  {s.id}
-                </span>
+                <span className="mono" style={{ fontSize: "0.85rem" }}>{s.id}</span>
               </h4>
             </header>
-            <div className="section-content">{s.content}</div>
+            <div className="section-content">{colContent(s)}</div>
           </div>
         ))}
       </div>
@@ -107,7 +170,7 @@ export default function ContractDetailPage({
         <table className="table">
           <thead>
             <tr>
-              <th>{t.usage.recentCalls(0).split("(")[0].trim() || "Time"}</th>
+              <th>Time</th>
               <th>Op</th>
               <th>Section</th>
               <th>{t.usage.tokens}</th>

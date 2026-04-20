@@ -7,8 +7,12 @@ import { useT } from "../components/LocaleProvider";
 interface Row {
   id: string;
   jurisdiction: string;
-  language: string;
+  jurisdictionLanguage: string;
+  bridgeLanguage: string;
+  uiLanguage: string;
   type: string;
+  uiLanguageAcceptedAt: string | null;
+  acceptedByUserId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -56,10 +60,12 @@ export default function HistoryPage() {
             <tr>
               <th>ID</th>
               <th>{t.playground.type}</th>
-              <th>{t.playground.language}</th>
               <th>{t.playground.jurisdiction}</th>
-              <th>{t.usage.totalCalls}</th>
-              <th>{t.history.contractLabel}</th>
+              <th>Legal</th>
+              <th>Bridge</th>
+              <th>UI</th>
+              <th>Accepted</th>
+              <th>Created</th>
             </tr>
           </thead>
           <tbody>
@@ -69,9 +75,15 @@ export default function HistoryPage() {
                   <Link href={`/history/${c.id}`}>{c.id.slice(0, 12)}…</Link>
                 </td>
                 <td>{c.type}</td>
-                <td>{c.language}</td>
                 <td>{c.jurisdiction}</td>
-                <td className="muted">—</td>
+                <td>{c.jurisdictionLanguage}</td>
+                <td>{c.bridgeLanguage}</td>
+                <td>{c.uiLanguage}</td>
+                <td>
+                  {c.uiLanguageAcceptedAt
+                    ? <span className="pill pill-ok">✓</span>
+                    : <span className="muted">—</span>}
+                </td>
                 <td className="muted">{new Date(c.createdAt).toISOString().slice(0, 19).replace("T", " ")}</td>
               </tr>
             ))}

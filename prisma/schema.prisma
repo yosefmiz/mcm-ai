@@ -1,7 +1,7 @@
-// MyHome — Real-estate contract generator
-// Sections live in JSONB on Contract for atomic full-doc reads and partial PATCH updates.
-// LegalConstraint is the global rules engine: filtered by jurisdiction (+ optional type/language)
-// and injected into every prompt so generation AND edits stay lawful.
+// MyHome — multi-language real-estate contract generator.
+// Architecture v2: "Holy Trinity" — every contract is authored natively in
+// three languages simultaneously. No machine translation; the LLM composes
+// each column directly so legal style is correct in each jurisdiction.
 
 generator client {
   provider = "prisma-client-js"
@@ -32,14 +32,34 @@ enum Operation {
   CHAT
 }
 
+// ---------------------------------------------------------------------------
+// Contract — the generated agreement.
+// `sections` is JSONB, an array of objects matching ContractSectionSchema:
+//   { id, content_legal, content_bridge, content_ui }
+// ---------------------------------------------------------------------------
+
 model Contract {
   id           String       @id @default(cuid())
   jurisdiction String
-  language     Language
   type         ContractType
+
+  // The "Holy Trinity" languages — ISO 639-1 lowercase codes ("he", "en",
+  // "ar", "el", "de", etc). String rather than the Language enum so we can
+  // serve any jurisdiction, not just the four UI languages.
+  jurisdictionLanguage String
+  bridgeLanguage       String
+  uiLanguage           String
 
   metadata     Json
   sections     Json
+
+  // ---- Legal-defense audit trail ----
+  // Captured the moment the user accepts the generated agreement. The IP
+  // and timestamp are evidence that a specific person, on a specific
+  // device, agreed to the language waiver.
+  uiLanguageAcceptedAt DateTime?
+  acceptedByUserId     String?
+  userIpAddress        String?
 
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
@@ -47,8 +67,65 @@ model Contract {
   usageLogs    UsageLog[]
 
   @@index([jurisdiction, type])
-  @@index([language])
+  @@index([jurisdictionLanguage])
+  @@index([acceptedByUserId])
 }
+
+// ---------------------------------------------------------------------------
+// LegalConstraint — global rules engine. Rules are written in English
+// (the bridge language across our prompt layer) and the model is responsible
+// for honoring them in every column it generates.
+// ---------------------------------------------------------------------------
+
+model LegalConstraint {
+  id           String        @id @default(cuid())
+  jurisdiction String
+  language     Language?
+  type         ContractType?
+
+  category     String
+  rule         String
+  citation     String?
+  priority     Int           @default(0)
+  isActive     Boolean       @default(true)
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([jurisdiction, type, isActive])
+  @@index([category])
+}
+
+// ---------------------------------------------------------------------------
+// Glossary — rigid per-jurisdiction terminology. Forces the model to use
+// the exact phrase a regulator or court expects. Example:
+//   (jurisdiction=IL, language=he, term=security_deposit)
+//     -> rigidValue = "פיקדון לבטחון"
+// At generation time we inject the relevant rows and instruct the model to
+// use the rigid value verbatim wherever the concept appears.
+// ---------------------------------------------------------------------------
+
+model Glossary {
+  id           String   @id @default(cuid())
+  jurisdiction String
+  language     String
+  term         String
+  rigidValue   String
+  notes        String?
+  isActive     Boolean  @default(true)
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([jurisdiction, language, term])
+  @@index([jurisdiction, language, isActive])
+}
+
+// ---------------------------------------------------------------------------
+// ContractTemplate — reference exemplars used as structural anchors during
+// generation. Sections still use the legacy single-content schema (id, title,
+// content) because templates are uploaded raw documents in one language.
+// ---------------------------------------------------------------------------
 
 model ContractTemplate {
   id           String       @id @default(cuid())
@@ -58,9 +135,9 @@ model ContractTemplate {
   type         ContractType
 
   title        String
-  source       String       @unique     // file path or URI; dedupes ingest
-  rawText      String       @db.Text    // original extracted text
-  sections     Json                       // structured per ContractDocumentSchema
+  source       String       @unique
+  rawText      String       @db.Text
+  sections     Json
 
   isActive     Boolean      @default(true)
   priority     Int          @default(0)
@@ -70,6 +147,10 @@ model ContractTemplate {
 
   @@index([jurisdiction, type, language, isActive])
 }
+
+// ---------------------------------------------------------------------------
+// UsageLog — per-call telemetry: tokens, latency, cost.
+// ---------------------------------------------------------------------------
 
 model UsageLog {
   id           String       @id @default(cuid())
@@ -99,23 +180,4 @@ model UsageLog {
   @@index([contractId])
   @@index([operation, createdAt])
   @@index([createdAt])
-}
-
-model LegalConstraint {
-  id           String        @id @default(cuid())
-  jurisdiction String
-  language     Language?
-  type         ContractType?
-
-  category     String
-  rule         String
-  citation     String?
-  priority     Int           @default(0)
-  isActive     Boolean       @default(true)
-
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-
-  @@index([jurisdiction, type, isActive])
-  @@index([category])
 }
