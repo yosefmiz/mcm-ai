@@ -22,6 +22,8 @@
   "dependencies": {
     "@langchain/core": "^1.1.40",
     "@langchain/ollama": "^1.2.6",
+    "@neondatabase/serverless": "^1.1.0",
+    "@prisma/adapter-neon": "^7.7.0",
     "@prisma/client": "^6.19.3",
     "langchain": "^1.3.3",
     "mammoth": "^1.12.0",
