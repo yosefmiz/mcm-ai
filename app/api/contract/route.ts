@@ -19,6 +19,7 @@ import {
 } from "@/lib/ai";
 import { computeCostUsd } from "@/lib/usage";
 import { fetchAndSerializeDealContext } from "@/lib/context-builder";
+import { findCanonicalTemplate, assembleFromCanonical } from "@/lib/canonical";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -109,32 +110,60 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const inputs: Record<string, unknown> = { ...(data.inputs ?? {}) };
 
+  // ---- Try CANONICAL template first (deterministic, no LLM call) ----
   let docResult;
-  try {
-    docResult = await generateInitialContract({
+  let usedCanonical: { id: string; appliedFacts: string[]; remaining: string[] } | null = null;
+
+  const canonical = await findCanonicalTemplate(prisma, {
+    jurisdiction,
+    type,
+    jurisdictionLanguage: data.jurisdictionLanguage,
+  });
+
+  if (canonical) {
+    const facts = factsFromDealContext(ctx);
+    const assembled = assembleFromCanonical({
+      template: canonical,
       jurisdiction,
       jurisdictionLanguage: data.jurisdictionLanguage,
       type,
       inputs,
-      dealFacts: ctx.factSheet,
-      prisma,
+      facts,
     });
-  } catch (e) {
-    await logUsage({
-      operation: "GENERATE",
-      jurisdiction,
-      languageEnum: isoToEnum(data.jurisdictionLanguage) ?? "EN",
-      type,
-      sectionId: null,
-      contractId: null,
-      usage: emptyUsage(),
-      status: "ERROR",
-      error: (e as Error).message,
-    });
-    return NextResponse.json(
-      { error: "Generation failed", detail: (e as Error).message },
-      { status: 502 },
-    );
+    docResult = { document: assembled.document, usage: assembled.usage };
+    usedCanonical = {
+      id: assembled.templateId,
+      appliedFacts: assembled.appliedFacts,
+      remaining: assembled.remainingPlaceholders,
+    };
+  } else {
+    // ---- Fallback: LLM generation ----
+    try {
+      docResult = await generateInitialContract({
+        jurisdiction,
+        jurisdictionLanguage: data.jurisdictionLanguage,
+        type,
+        inputs,
+        dealFacts: ctx.factSheet,
+        prisma,
+      });
+    } catch (e) {
+      await logUsage({
+        operation: "GENERATE",
+        jurisdiction,
+        languageEnum: isoToEnum(data.jurisdictionLanguage) ?? "EN",
+        type,
+        sectionId: null,
+        contractId: null,
+        usage: emptyUsage(),
+        status: "ERROR",
+        error: (e as Error).message,
+      });
+      return NextResponse.json(
+        { error: "Generation failed", detail: (e as Error).message },
+        { status: 502 },
+      );
+    }
   }
 
   const saved = await prisma.contract.create({
@@ -205,9 +234,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       document: docResult.document,
       dealFacts: ctx.factSheet,
       missing: ctx.missing,
-      // Surface to the client whether async work is in flight; they can
-      // poll GET /api/contract/:id and watch for content_bridge / content_ui
-      // becoming non-empty.
+      source: usedCanonical ? "canonical_template" : "llm",
+      canonical: usedCanonical
+        ? {
+            templateId: usedCanonical.id,
+            appliedFacts: usedCanonical.appliedFacts,
+            remainingPlaceholders: usedCanonical.remaining,
+          }
+        : undefined,
       translationsPending: data.translateTo
         ? Object.entries(data.translateTo)
             .filter(([, v]) => !!v)
@@ -220,6 +254,50 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     },
     { status: 201 },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Convert resolved CRM entities to a flat fact map suitable for canonical
+// template substitution. Keys are the SCREAMING_SNAKE_CASE placeholders
+// our canonical templates use.
+// ---------------------------------------------------------------------------
+
+function factsFromDealContext(ctx: {
+  property?: { address?: string; unit?: string | null; city?: string; jurisdiction?: string; rooms?: number | null; areaSqm?: number | null; description?: string | null } | null;
+  landlord?: { fullName?: string; idNumber?: string | null; email?: string | null; phone?: string | null; address?: string | null } | null;
+  tenant?: { fullName?: string; idNumber?: string | null; email?: string | null; phone?: string | null; address?: string | null } | null;
+  deal?: { monthlyRent?: unknown; rentCurrency?: string; depositAmount?: unknown; startDate?: Date | null; endDate?: Date | null; termMonths?: number | null } | null;
+}): Record<string, string> {
+  const f: Record<string, string> = {};
+  if (ctx.property) {
+    if (ctx.property.address) f.PROPERTY_FULL_ADDRESS = `${ctx.property.address}${ctx.property.unit ? `, ${ctx.property.unit}` : ""}`;
+    if (ctx.property.city) f.JURISDICTION_CITY = ctx.property.city;
+    if (ctx.property.rooms != null) f.PROPERTY_ROOMS = String(ctx.property.rooms);
+    if (ctx.property.areaSqm != null) f.PROPERTY_AREA_SQM = String(ctx.property.areaSqm);
+  }
+  if (ctx.landlord) {
+    if (ctx.landlord.fullName) f.LANDLORD_FULL_NAME = ctx.landlord.fullName;
+    if (ctx.landlord.idNumber) f.LANDLORD_ID_NUMBER = ctx.landlord.idNumber;
+    if (ctx.landlord.email) f.LANDLORD_EMAIL = ctx.landlord.email;
+    if (ctx.landlord.phone) f.LANDLORD_PHONE = ctx.landlord.phone;
+    if (ctx.landlord.address) f.LANDLORD_ADDRESS = ctx.landlord.address;
+  }
+  if (ctx.tenant) {
+    if (ctx.tenant.fullName) f.TENANT_FULL_NAME = ctx.tenant.fullName;
+    if (ctx.tenant.idNumber) f.TENANT_ID_NUMBER = ctx.tenant.idNumber;
+    if (ctx.tenant.email) f.TENANT_EMAIL = ctx.tenant.email;
+    if (ctx.tenant.phone) f.TENANT_PHONE = ctx.tenant.phone;
+    if (ctx.tenant.address) f.TENANT_ADDRESS = ctx.tenant.address;
+  }
+  if (ctx.deal) {
+    if (ctx.deal.monthlyRent != null) f.MONTHLY_RENT_AMOUNT = String(ctx.deal.monthlyRent);
+    if (ctx.deal.rentCurrency) f.RENT_CURRENCY = ctx.deal.rentCurrency;
+    if (ctx.deal.depositAmount != null) f.SECURITY_DEPOSIT_AMOUNT = String(ctx.deal.depositAmount);
+    if (ctx.deal.startDate) f.LEASE_START_DATE = ctx.deal.startDate.toISOString().slice(0, 10);
+    if (ctx.deal.endDate) f.LEASE_END_DATE = ctx.deal.endDate.toISOString().slice(0, 10);
+    if (ctx.deal.termMonths != null) f.LEASE_TERM_MONTHS = String(ctx.deal.termMonths);
+  }
+  return f;
 }
 
 // ---------------------------------------------------------------------------

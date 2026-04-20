@@ -32,6 +32,16 @@ enum Operation {
   CHAT
 }
 
+enum TemplateKind {
+  // Real contracts uploaded from data/contracts/. Used as STYLE references
+  // injected into the LLM prompt during generation.
+  EXEMPLAR
+  // Lawyer-curated full templates with [[PLACEHOLDERS]] baked in. The
+  // generator substitutes facts and returns directly — no LLM call needed
+  // for the body, just the optional translation step.
+  CANONICAL
+}
+
 // ---------------------------------------------------------------------------
 // Contract — the generated agreement.
 // `sections` is JSONB, an array of objects matching ContractSectionSchema:
@@ -239,6 +249,8 @@ model ContractTemplate {
   language     Language
   type         ContractType
 
+  kind         TemplateKind @default(EXEMPLAR)
+
   title        String
   source       String       @unique
   rawText      String       @db.Text
@@ -251,6 +263,7 @@ model ContractTemplate {
   updatedAt    DateTime     @updatedAt
 
   @@index([jurisdiction, type, language, isActive])
+  @@index([jurisdiction, type, language, kind, isActive])
 }
 
 // ---------------------------------------------------------------------------

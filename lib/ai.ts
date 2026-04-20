@@ -167,6 +167,7 @@ export async function fetchExemplarTemplates(
   const all = await prisma.contractTemplate.findMany({
     where: {
       isActive: true,
+      kind: "EXEMPLAR",
       jurisdiction,
       type,
       ...(langEnum ? { language: langEnum } : {}),

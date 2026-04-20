@@ -13,7 +13,8 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",
-    "ingest:templates": "tsx scripts/ingest-templates.ts"
+    "ingest:templates": "tsx scripts/ingest-templates.ts",
+    "seed:templates": "tsx scripts/seed-canonical-templates.ts"
   },
   "keywords": [],
   "author": "",
