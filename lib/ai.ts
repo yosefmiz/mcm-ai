@@ -14,9 +14,11 @@ import {
   SYSTEM_GENERATE,
   SYSTEM_EDIT,
   SYSTEM_EXTRACT,
+  SYSTEM_EXTRACT_FACTS,
   buildGeneratePrompt,
   buildEditPrompt,
   buildExtractPrompt,
+  buildExtractFactsPrompt,
   type ConstraintRow,
   type GlossaryRow,
   type TemplateRef,
@@ -429,6 +431,100 @@ export async function extractTemplate(input: ExtractInput): Promise<ExtractedDoc
     throw new Error(`Extractor output failed validation: ${validated.error.message}`);
   }
   return validated.data;
+}
+
+// ---------------------------------------------------------------------------
+// Placeholder utilities
+// ---------------------------------------------------------------------------
+
+const PLACEHOLDER_RE = /\[\[([A-Z][A-Z0-9_]*)\]\]/g;
+
+/** Find every distinct [[FIELD_NAME]] across all 3 columns of all sections. */
+export function collectPlaceholders(
+  sections: ContractSection[],
+): string[] {
+  const set = new Set<string>();
+  for (const s of sections) {
+    for (const col of [s.content_legal, s.content_bridge, s.content_ui]) {
+      for (const m of col.matchAll(PLACEHOLDER_RE)) set.add(m[1]);
+    }
+  }
+  return Array.from(set).sort();
+}
+
+/**
+ * Apply a facts map by literal substitution of every [[KEY]] across all
+ * 3 columns of every section. Returns the new sections array and the set
+ * of fact keys that actually matched something. Unmatched keys are silently
+ * ignored — the caller decides if that is an error.
+ */
+export function applyFactsToSections(
+  sections: ContractSection[],
+  facts: Record<string, string>,
+): { sections: ContractSection[]; appliedKeys: string[] } {
+  const applied = new Set<string>();
+  const next = sections.map((s) => {
+    const replaceIn = (text: string): string =>
+      text.replace(PLACEHOLDER_RE, (whole, key: string) => {
+        if (Object.prototype.hasOwnProperty.call(facts, key)) {
+          applied.add(key);
+          return facts[key];
+        }
+        return whole;
+      });
+    return {
+      ...s,
+      content_legal: replaceIn(s.content_legal),
+      content_bridge: replaceIn(s.content_bridge),
+      content_ui: replaceIn(s.content_ui),
+    };
+  });
+  return { sections: next, appliedKeys: Array.from(applied).sort() };
+}
+
+// ---------------------------------------------------------------------------
+// Fact extraction — natural-language instruction -> structured facts map
+// ---------------------------------------------------------------------------
+
+const FactsResponseSchema = z.object({
+  facts: z.record(
+    z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+    z.string().min(1).max(2000),
+  ),
+});
+
+export interface ExtractFactsResult {
+  facts: Record<string, string>;
+  usage: UsageInfo;
+}
+
+export async function extractFactsFromInstruction(
+  instruction: string,
+  knownFields: string[],
+): Promise<ExtractFactsResult> {
+  const prompt = buildExtractFactsPrompt({ instruction, knownFields });
+  const startedAt = Date.now();
+  const res = await jsonModel.invoke([
+    new SystemMessage(SYSTEM_EXTRACT_FACTS),
+    new HumanMessage(prompt),
+  ]);
+  const durationMs = Date.now() - startedAt;
+  const raw = messageContentToString(res.content);
+  const cleaned = stripJsonFences(raw);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (e) {
+    throw new Error(
+      `Fact extractor returned non-JSON: ${(e as Error).message}\n--- raw ---\n${raw.slice(0, 300)}`,
+    );
+  }
+  const validated = FactsResponseSchema.safeParse(parsed);
+  if (!validated.success) {
+    throw new Error(`Fact extractor failed validation: ${validated.error.message}`);
+  }
+  return { facts: validated.data.facts, usage: extractUsage(res, durationMs) };
 }
 
 // ---------------------------------------------------------------------------

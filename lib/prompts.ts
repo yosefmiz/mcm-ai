@@ -95,7 +95,28 @@ machine-translate; each column is composed in its own native legal style.
   verbatim. Adapt to the user's specifics.
 - The FINAL section MUST be id="language_waiver" — see
   <language_waiver_requirements>.
-</output_rules>`;
+</output_rules>
+
+<completeness_and_placeholders>
+- Always produce the FULL contract with every standard clause fully drafted,
+  even when <inputs> is sparse. Do NOT shorten the document or omit clauses
+  to mask missing facts.
+- For ANY specific fact that <inputs> does not supply (a name, an address,
+  an amount, a date, a duration, a percentage, an account number, etc.),
+  insert a placeholder token in this exact form:
+      [[FIELD_NAME]]
+  where FIELD_NAME is SCREAMING_SNAKE_CASE in English, descriptive,
+  consistent across the whole document. Examples:
+      [[LANDLORD_FULL_NAME]], [[TENANT_ID_NUMBER]], [[MONTHLY_RENT_AMOUNT]],
+      [[LEASE_START_DATE]], [[SECURITY_DEPOSIT_AMOUNT]],
+      [[PROPERTY_FULL_ADDRESS]].
+- Use the SAME placeholder verbatim wherever the same fact appears, in all
+  three language columns. Do not localize the placeholder text.
+- Never fabricate a specific value to fill a missing fact. Never write
+  "[insert name]" or "_____" — only the [[FIELD_NAME]] form is allowed.
+- The surrounding clause text is still written in full natural legal
+  language; the placeholder simply stands in for the unknown atom.
+</completeness_and_placeholders>`;
 
 export interface BuildGenerateArgs {
   jurisdiction: string;
@@ -198,6 +219,10 @@ You regenerate the clause in all three languages simultaneously.
   three columns.
 - Hebrew/Arabic are written right-to-left without bidi marks.
 - Do not invent facts not present in the current clause or the instruction.
+- Preserve any [[FIELD_NAME]] placeholders already present in the current
+  clause unless the <user_instruction> explicitly supplies a value for them.
+- For any new specific fact you would otherwise need to invent, insert a
+  [[SCREAMING_SNAKE_CASE]] placeholder rather than fabricating it.
 </output_rules>`;
 
 export interface BuildEditArgs {
@@ -274,6 +299,50 @@ You are a legal document parser.
 - Title each section in the same language as the source.
 - If a standard section is not present in the source, omit it — do not invent.
 </output_rules>`;
+
+// ===========================================================================
+// FACT EXTRACTION — natural-language instruction → structured facts map
+// ===========================================================================
+
+export const SYSTEM_EXTRACT_FACTS = `<role>
+You convert a free-text instruction into a structured map of contract facts.
+</role>
+<output_rules>
+- Emit EXACTLY ONE JSON object: { "facts": { "FIELD_NAME": "value", ... } }.
+- No prose, no markdown.
+- Keys are SCREAMING_SNAKE_CASE in English; values are short literal strings
+  (the actual name, amount, date, address, etc.) in whatever language they
+  were given.
+- If the instruction maps to one of the suggested known fields, prefer that
+  exact key. Otherwise invent a clear new key.
+- If the instruction provides nothing extractable, return { "facts": {} }.
+</output_rules>`;
+
+export function buildExtractFactsPrompt(args: {
+  instruction: string;
+  knownFields: string[];
+}): string {
+  return `<task>extract_facts</task>
+
+<known_field_names>
+${args.knownFields.length === 0 ? "(none — invent appropriate keys)" : args.knownFields.join(", ")}
+</known_field_names>
+
+<instruction>
+${args.instruction.replace(/]]>/g, "]]]]><![CDATA[>")}
+</instruction>
+
+<output_schema>
+{ "facts": { "FIELD_NAME": "literal value", "...": "..." } }
+</output_schema>
+
+Emit the JSON now.`;
+}
+
+// ===========================================================================
+// EXTRACT — raw uploaded contract → structured single-content sections.
+// (Templates remain single-content; only generated Contracts are 3-column.)
+// ===========================================================================
 
 export function buildExtractPrompt(args: {
   jurisdiction: string;

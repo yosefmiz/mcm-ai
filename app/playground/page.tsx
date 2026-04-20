@@ -75,6 +75,10 @@ export default function Playground() {
   const [editInstruction, setEditInstruction] = useState("");
   const [editBusy, setEditBusy] = useState(false);
 
+  const [factsBusy, setFactsBusy] = useState(false);
+  const [factsInstruction, setFactsInstruction] = useState("");
+  const [factsValues, setFactsValues] = useState<Record<string, string>>({});
+
   async function generate(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -143,6 +147,46 @@ export default function Playground() {
       setError((err as Error).message);
     } finally {
       setEditBusy(false);
+    }
+  }
+
+  // Detect placeholders across all sections + columns
+  const placeholders = contract
+    ? Array.from(
+        new Set(
+          contract.document.sections.flatMap((s) =>
+            [s.content_legal, s.content_bridge, s.content_ui].flatMap((c) =>
+              Array.from(c.matchAll(/\[\[([A-Z][A-Z0-9_]*)\]\]/g)).map((m) => m[1]),
+            ),
+          ),
+        ),
+      ).sort()
+    : [];
+
+  async function applyFacts(payload: { facts?: Record<string, string>; instruction?: string }) {
+    if (!contract) return;
+    setFactsBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/contract/${contract.id}/facts`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Apply facts failed");
+      if (data.sections) {
+        setContract({
+          ...contract,
+          document: { ...contract.document, sections: data.sections },
+        });
+        setFactsValues({});
+        setFactsInstruction("");
+      }
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setFactsBusy(false);
     }
   }
 
@@ -248,6 +292,74 @@ export default function Playground() {
           <div className="card">
             <div className="stat-label">{t.playground.model}</div>
             <div className="stat-value" style={{ fontSize: "1rem" }}>{usage.model}</div>
+          </div>
+        </div>
+      )}
+
+      {contract && placeholders.length > 0 && (
+        <div className="card" style={{ marginTop: "1rem", borderColor: "var(--warn)" }}>
+          <h3 style={{ marginTop: 0 }}>
+            Fill in missing details
+            <span className="muted" style={{ fontSize: "0.75rem", marginLeft: "0.5rem", fontWeight: 400 }}>
+              {placeholders.length} placeholder{placeholders.length === 1 ? "" : "s"} detected
+            </span>
+          </h3>
+          <p className="muted" style={{ fontSize: "0.85rem" }}>
+            Type the value for each, or describe everything in free text below — gemma4 will parse it.
+          </p>
+
+          <div className="grid-2" style={{ marginTop: "0.5rem" }}>
+            {placeholders.map((key) => (
+              <div key={key}>
+                <label className="mono" style={{ fontSize: "0.7rem" }}>{key}</label>
+                <input
+                  value={factsValues[key] ?? ""}
+                  onChange={(e) => setFactsValues({ ...factsValues, [key]: e.target.value })}
+                  placeholder="value"
+                />
+              </div>
+            ))}
+          </div>
+
+          <div style={{ marginTop: "0.75rem" }}>
+            <label>Or describe in plain text (any language)</label>
+            <textarea
+              value={factsInstruction}
+              onChange={(e) => setFactsInstruction(e.target.value)}
+              placeholder='e.g. "המשכיר יוסי כהן, השוכר רני לוי, השכירות 4500 ש"ח, מתחיל ב-1 במאי 2026"'
+              style={{ minHeight: "5rem" }}
+            />
+          </div>
+
+          <div style={{ marginTop: "0.5rem", display: "flex", gap: "0.5rem", justifyContent: "flex-end" }}>
+            <button
+              className="ghost"
+              onClick={() => {
+                setFactsValues({});
+                setFactsInstruction("");
+              }}
+              disabled={factsBusy}
+            >
+              Clear
+            </button>
+            <button
+              onClick={() => {
+                const filled = Object.fromEntries(
+                  Object.entries(factsValues).filter(([, v]) => v.trim().length > 0),
+                );
+                const payload: { facts?: Record<string, string>; instruction?: string } = {};
+                if (Object.keys(filled).length > 0) payload.facts = filled;
+                if (factsInstruction.trim().length > 0) payload.instruction = factsInstruction;
+                if (!payload.facts && !payload.instruction) return;
+                void applyFacts(payload);
+              }}
+              disabled={
+                factsBusy ||
+                (Object.values(factsValues).every((v) => !v.trim()) && !factsInstruction.trim())
+              }
+            >
+              {factsBusy ? "Applying…" : "Apply facts"}
+            </button>
           </div>
         </div>
       )}

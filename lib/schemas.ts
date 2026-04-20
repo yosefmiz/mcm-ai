@@ -88,6 +88,31 @@ export const AcceptRequestSchema = z.object({
   acceptedByUserId: z.string().min(1).max(200),
 });
 
+// ---------------------------------------------------------------------------
+// Facts: SCREAMING_SNAKE_CASE keys -> literal values used to substitute
+// [[FIELD_NAME]] placeholders left by the generator.
+// ---------------------------------------------------------------------------
+
+export const FactKeySchema = z
+  .string()
+  .min(1)
+  .max(80)
+  .regex(/^[A-Z][A-Z0-9_]*$/, "fact key must be SCREAMING_SNAKE_CASE");
+
+export const FactsMapSchema = z.record(FactKeySchema, z.string().min(1).max(2000));
+
+export const ApplyFactsRequestSchema = z
+  .object({
+    facts: FactsMapSchema.optional(),
+    instruction: z.string().min(1).max(4000).optional(),
+  })
+  .refine((d) => !!d.facts || !!d.instruction, {
+    message: "Provide either 'facts' or 'instruction'",
+  });
+
+export type FactsMap = z.infer<typeof FactsMapSchema>;
+export type ApplyFactsRequest = z.infer<typeof ApplyFactsRequestSchema>;
+
 export type GenerateRequest = z.infer<typeof GenerateRequestSchema>;
 export type EditRequest = z.infer<typeof EditRequestSchema>;
 export type AcceptRequest = z.infer<typeof AcceptRequestSchema>;
