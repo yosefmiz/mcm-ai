@@ -33,10 +33,41 @@ export const ContractSectionSchema = z.object({
     .string()
     .min(1)
     .regex(/^[a-z][a-z0-9_]*$/, "id must be snake_case ascii"),
+  // The canonical, legally binding column — always populated.
   content_legal: z.string().min(1),
-  content_bridge: z.string().min(1),
-  content_ui: z.string().min(1),
+  // Translation columns — empty string means "not yet translated".
+  // Populated lazily by POST /api/contract/:id/translate.
+  content_bridge: z.string().default(""),
+  content_ui: z.string().default(""),
 });
+
+// ---------------------------------------------------------------------------
+// What the LLM emits for the initial generation: single-content sections
+// in the jurisdictionLanguage. We then store them with empty bridge/ui
+// columns until the user requests a translation.
+// ---------------------------------------------------------------------------
+
+export const GeneratedSectionSchema = z.object({
+  id: z
+    .string()
+    .min(1)
+    .regex(/^[a-z][a-z0-9_]*$/, "id must be snake_case ascii"),
+  content: z.string().min(1),
+});
+
+export const GeneratedDocumentSchema = z.object({
+  metadata: z.object({
+    jurisdiction: z.string().min(2),
+    jurisdictionLanguage: IsoLanguageSchema,
+    bridgeLanguage: IsoLanguageSchema,
+    uiLanguage: IsoLanguageSchema,
+    type: ContractTypeEnum,
+  }),
+  sections: z.array(GeneratedSectionSchema).min(1),
+});
+
+export type GeneratedSection = z.infer<typeof GeneratedSectionSchema>;
+export type GeneratedDocument = z.infer<typeof GeneratedDocumentSchema>;
 
 export type ContractSection = z.infer<typeof ContractSectionSchema>;
 
@@ -82,6 +113,15 @@ export const EditRequestSchema = z.object({
   userInstruction: z.string().min(1).max(2000),
   acceptedByUserId: z.string().min(1).max(200).optional(),
 });
+
+export const TranslateRequestSchema = z.object({
+  target: z.enum(["bridge", "ui"]),
+  // Optional: limit to a single section. Default = translate all sections
+  // whose target column is currently empty.
+  sectionId: z.string().min(1).optional(),
+});
+
+export type TranslateRequest = z.infer<typeof TranslateRequestSchema>;
 
 export const AcceptRequestSchema = z.object({
   contractId: z.string().min(1),

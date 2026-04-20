@@ -77,27 +77,23 @@ const formatTemplates = (refs: TemplateRef[]): string =>
 
 export const SYSTEM_GENERATE = `<role>
 You are MyHome's senior real-estate contract drafter and licensed paralegal AI.
-You author contracts NATIVELY in three languages simultaneously. You never
-machine-translate; each column is composed in its own native legal style.
+You author the contract in ONE language only — the jurisdiction_language —
+using its native legal register and standard local boilerplate.
+Translation into other languages is performed later by a separate step.
 </role>
 
 <output_rules>
 - Emit EXACTLY ONE valid JSON object that matches <output_schema>.
 - No prose, no markdown fences, no commentary, no apology, no preamble.
-- Every section MUST contain content_legal, content_bridge, and content_ui.
-- content_legal is composed in the jurisdiction_language using its native
-  legal register and standard local boilerplate.
-- content_bridge is composed in the bridge_language using its native legal
-  register — NOT a literal translation of content_legal.
-- content_ui is composed in the ui_language as a clean, plain reader-friendly
-  rendering of the same clause.
+- Every section has exactly two fields: "id" (snake_case ascii) and
+  "content" (the full clause body in jurisdiction_language).
 - Hebrew (he) and Arabic (ar) are written naturally right-to-left without
   any inserted Unicode bidi marks; clients render direction from metadata.
 - Honor every <legal_constraint> with absolute priority. If a user input
-  conflicts with a constraint, the constraint wins and the relevant section's
-  content names the lawful limit.
-- Use any <glossary> entry's required_wording verbatim wherever the
-  underlying concept appears in the matching language column.
+  conflicts with a constraint, the constraint wins and the relevant section
+  names the lawful limit.
+- Use any <glossary> entry whose language matches jurisdiction_language as
+  the required_wording verbatim wherever the concept appears.
 - Use <reference_templates> for structural anchoring and tone, NEVER copy
   verbatim. Adapt to the user's specifics.
 - The FINAL section MUST be id="language_waiver" — see
@@ -117,8 +113,7 @@ machine-translate; each column is composed in its own native legal style.
       [[LANDLORD_FULL_NAME]], [[TENANT_ID_NUMBER]], [[MONTHLY_RENT_AMOUNT]],
       [[LEASE_START_DATE]], [[SECURITY_DEPOSIT_AMOUNT]],
       [[PROPERTY_FULL_ADDRESS]].
-- Use the SAME placeholder verbatim wherever the same fact appears, in all
-  three language columns. Do not localize the placeholder text.
+- Use the SAME placeholder verbatim wherever the same fact appears.
 - Never fabricate a specific value to fill a missing fact. Never write
   "[insert name]" or "_____" — only the [[FIELD_NAME]] form is allowed.
 - The surrounding clause text is still written in full natural legal
@@ -180,12 +175,11 @@ Add additional snake_case sections only if the contract type or a constraint req
 
 <language_waiver_requirements>
 The FINAL section MUST be id="language_waiver".
-- content_legal (in ${args.jurisdictionLanguage}) and content_bridge (in ${args.bridgeLanguage}) MUST explicitly state, in their respective native legal registers:
+Its content (in ${args.jurisdictionLanguage}, native legal register) MUST explicitly state:
   1. The parties have read and understood this agreement.
   2. They voluntarily waive the right to a sworn translator.
   3. They acknowledge that the ${args.jurisdictionLanguage} version GOVERNS in case of any dispute.
-  4. The ${args.bridgeLanguage} version is provided for the parties' mutual convenience and has no independent legal force.
-- content_ui (in ${args.uiLanguage}) repeats the same substance in plain reader language.
+  4. Any later translation provided to the parties is for convenience only and has no independent legal force.
 </language_waiver_requirements>
 
 <output_schema>
@@ -200,9 +194,7 @@ The FINAL section MUST be id="language_waiver".
   "sections": [
     {
       "id": "<snake_case_id>",
-      "content_legal": "<full clause body in ${args.jurisdictionLanguage}>",
-      "content_bridge": "<full clause body in ${args.bridgeLanguage}>",
-      "content_ui": "<plain clause body in ${args.uiLanguage}>"
+      "content": "<full clause body in ${args.jurisdictionLanguage}>"
     }
   ]
 }
@@ -217,22 +209,21 @@ Emit the JSON now.`;
 
 export const SYSTEM_EDIT = `<role>
 You revise ONE clause of an existing real-estate contract for MyHome.
-You regenerate the clause in all three languages simultaneously.
+You output the revised clause in ONE language — the jurisdiction_language.
+Translation to other languages is performed later by a separate step.
 </role>
 
 <output_rules>
-- Emit EXACTLY ONE valid JSON object: { "id", "content_legal", "content_bridge", "content_ui" }.
+- Emit EXACTLY ONE valid JSON object: { "id", "content" }.
 - No prose, no markdown fences, no commentary, no preamble like "Here is".
 - Preserve the section's id verbatim from <section_id>.
-- Compose each language column natively, NOT by translating another column.
+- The "content" field is the full revised clause body in jurisdiction_language.
 - Honor every <legal_constraint>. If the <user_instruction> conflicts with a
   constraint, follow the constraint and emit the lawful version. Do not
   apologize — silently produce the compliant clause.
-- Use <glossary> required_wording verbatim wherever the concept appears in
-  the matching language column.
+- Use <glossary> required_wording verbatim wherever the concept appears.
 - The <user_instruction> may be written in any language (often the
-  ui_language). Understand its intent and apply it consistently across all
-  three columns.
+  ui_language). Understand its intent and apply it.
 - Hebrew/Arabic are written right-to-left without bidi marks.
 - Do not invent facts not present in the current clause or the instruction.
 - Preserve any [[FIELD_NAME]] placeholders already present in the current
@@ -265,16 +256,8 @@ export function buildEditPrompt(args: BuildEditArgs): string {
 
 <section_id>${args.sectionId}</section_id>
 
-<current_clause>
-  <content_legal language="${args.jurisdictionLanguage}">
+<current_clause language="${args.jurisdictionLanguage}">
 ${cdata(args.current.content_legal)}
-  </content_legal>
-  <content_bridge language="${args.bridgeLanguage}">
-${cdata(args.current.content_bridge)}
-  </content_bridge>
-  <content_ui language="${args.uiLanguage}">
-${cdata(args.current.content_ui)}
-  </content_ui>
 </current_clause>
 
 <user_instruction>
@@ -292,9 +275,60 @@ ${cdata(formatGlossary(args.glossary))}
 <output_schema>
 {
   "id": "${args.sectionId}",
-  "content_legal": "<revised clause body in ${args.jurisdictionLanguage}>",
-  "content_bridge": "<revised clause body in ${args.bridgeLanguage}>",
-  "content_ui": "<revised clause body in ${args.uiLanguage}>"
+  "content": "<revised clause body in ${args.jurisdictionLanguage}>"
+}
+</output_schema>
+
+Emit the JSON now.`;
+}
+
+// ===========================================================================
+// TRANSLATE — render an existing clause from source language to target
+// ===========================================================================
+
+export const SYSTEM_TRANSLATE_SECTION = `<role>
+You are a legal translator. You translate a single contract clause from a
+source language into a target language for the parties' convenience.
+</role>
+
+<output_rules>
+- Emit EXACTLY ONE valid JSON object: { "id", "content" }.
+- No prose, no markdown fences, no commentary.
+- Preserve the section "id" verbatim from <section_id>.
+- The translation is FAITHFUL to the source — do not add, omit, or restate
+  in different terms. Use the target language's natural legal register.
+- Preserve every [[FIELD_NAME]] placeholder verbatim in English uppercase
+  with the [[ ]] brackets — never translate or localize them.
+- Preserve the structure: paragraphs, numbered lists, dashes.
+- Hebrew/Arabic are written right-to-left without bidi marks.
+- Do not include any disclaimer about translation accuracy.
+</output_rules>`;
+
+export function buildTranslatePrompt(args: {
+  sectionId: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  sourceContent: string;
+  glossary: GlossaryRow[];
+}): string {
+  return `<task>translate_section</task>
+
+<section_id>${args.sectionId}</section_id>
+<source_language>${args.sourceLanguage}</source_language>
+<target_language>${args.targetLanguage}</target_language>
+
+<source_content>
+${cdata(args.sourceContent)}
+</source_content>
+
+<glossary language="${args.targetLanguage}">
+${cdata(formatGlossary(args.glossary))}
+</glossary>
+
+<output_schema>
+{
+  "id": "${args.sectionId}",
+  "content": "<faithful translation of source_content into ${args.targetLanguage}>"
 }
 </output_schema>
 

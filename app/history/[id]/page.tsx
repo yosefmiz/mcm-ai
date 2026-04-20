@@ -107,6 +107,32 @@ export default function ContractDetailPage({
     return s.content_ui;
   }
 
+  const needsTranslation =
+    activeColumn !== "legal" &&
+    sections.some((s) =>
+      activeColumn === "bridge" ? s.content_bridge === "" : s.content_ui === "",
+    );
+
+  async function translateAll() {
+    if (activeColumn === "legal" || !contract) return;
+    const c = contract;
+    try {
+      const res = await fetch(`/api/contract/${c.id}/translate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: activeColumn }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Translation failed");
+        return;
+      }
+      if (data.sections) setContract({ ...c, sections: data.sections as Section[] });
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   return (
     <main>
       <p className="muted"><Link href="/history">{t.history.back}</Link></p>
@@ -150,6 +176,28 @@ export default function ContractDetailPage({
         </span>
       </h2>
 
+      {needsTranslation && (
+        <div
+          className="card"
+          style={{
+            marginBottom: "0.6rem",
+            borderColor: "var(--brand-green)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "0.75rem",
+            flexWrap: "wrap",
+          }}
+        >
+          <span>
+            This column ({activeColumn === "bridge" ? contract.bridgeLanguage : contract.uiLanguage}) is not translated yet.
+          </span>
+          <button onClick={translateAll}>
+            Translate to {activeColumn === "bridge" ? contract.bridgeLanguage : contract.uiLanguage}
+          </button>
+        </div>
+      )}
+
       <div dir={dir}>
         {sections.map((s) => (
           <div className="section-card" key={s.id}>
@@ -158,7 +206,9 @@ export default function ContractDetailPage({
                 <span className="mono" style={{ fontSize: "0.85rem" }}>{s.id}</span>
               </h4>
             </header>
-            <div className="section-content">{colContent(s)}</div>
+            <div className="section-content">
+              {colContent(s) || <em className="muted">(not translated yet)</em>}
+            </div>
           </div>
         ))}
       </div>

@@ -206,6 +206,39 @@ export default function Playground() {
     return s.content_ui;
   }
 
+  const needsTranslation =
+    contract && activeColumn !== "legal" &&
+    contract.document.sections.some((s) =>
+      activeColumn === "bridge" ? s.content_bridge === "" : s.content_ui === "",
+    );
+
+  const [translateBusy, setTranslateBusy] = useState(false);
+  async function translateAll() {
+    if (!contract || activeColumn === "legal") return;
+    setTranslateBusy(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/contract/${contract.id}/translate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: activeColumn }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Translation failed");
+      if (data.sections) {
+        setContract({
+          ...contract,
+          document: { ...contract.document, sections: data.sections },
+        });
+      }
+      if (data.usage) setUsage(data.usage);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setTranslateBusy(false);
+    }
+  }
+
   return (
     <main>
       <h1>{t.playground.title}</h1>
@@ -387,6 +420,28 @@ export default function Playground() {
             </span>
           </h2>
 
+          {needsTranslation && (
+            <div
+              className="card"
+              style={{
+                marginBottom: "0.6rem",
+                borderColor: "var(--brand-green)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "0.75rem",
+                flexWrap: "wrap",
+              }}
+            >
+              <span>
+                This column ({activeColumn === "bridge" ? meta.bridgeLanguage : meta.uiLanguage}) is not translated yet.
+              </span>
+              <button onClick={translateAll} disabled={translateBusy}>
+                {translateBusy ? "Translating…" : `Translate to ${activeColumn === "bridge" ? meta.bridgeLanguage : meta.uiLanguage}`}
+              </button>
+            </div>
+          )}
+
           <div dir={dir}>
             {contract.document.sections.map((s) => (
               <div className="section-card" key={s.id}>
@@ -404,7 +459,9 @@ export default function Playground() {
                     {editingId === s.id ? t.playground.cancel : t.playground.edit}
                   </button>
                 </header>
-                <div className="section-content">{columnContent(s)}</div>
+                <div className="section-content">
+                  {columnContent(s) || <em className="muted">(not translated yet)</em>}
+                </div>
                 {editingId === s.id && (
                   <div style={{ marginTop: "0.75rem" }}>
                     <label>{t.playground.editInstruction}</label>

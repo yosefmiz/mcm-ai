@@ -9,6 +9,8 @@ import { z } from "zod";
 import {
   ContractDocumentSchema,
   ContractSectionSchema,
+  GeneratedDocumentSchema,
+  GeneratedSectionSchema,
   type ContractDocument,
   type ContractSection,
 } from "./schemas";
@@ -18,11 +20,13 @@ import {
   SYSTEM_EXTRACT,
   SYSTEM_EXTRACT_FACTS,
   SYSTEM_ROUTE_CHAT,
+  SYSTEM_TRANSLATE_SECTION,
   buildGeneratePrompt,
   buildEditPrompt,
   buildExtractPrompt,
   buildExtractFactsPrompt,
   buildRouteChatPrompt,
+  buildTranslatePrompt,
   type ConstraintRow,
   type GlossaryRow,
   type TemplateRef,
@@ -269,7 +273,7 @@ export async function generateInitialContract(
     };
   }
 
-  const validated = ContractDocumentSchema.safeParse(parsed);
+  const validated = GeneratedDocumentSchema.safeParse(parsed);
   if (!validated.success) {
     throw new Error(
       `Model output failed schema validation: ${validated.error.message}`,
@@ -278,15 +282,24 @@ export async function generateInitialContract(
 
   // Defensive: ensure language_waiver is the FINAL section. If the model
   // emitted it earlier, move it; if missing, fail loudly.
-  const sections = [...validated.data.sections];
-  const waiverIdx = sections.findIndex((s) => s.id === "language_waiver");
+  const generated = [...validated.data.sections];
+  const waiverIdx = generated.findIndex((s) => s.id === "language_waiver");
   if (waiverIdx === -1) {
     throw new Error("Model did not emit a language_waiver section");
   }
-  if (waiverIdx !== sections.length - 1) {
-    const [waiver] = sections.splice(waiverIdx, 1);
-    sections.push(waiver);
+  if (waiverIdx !== generated.length - 1) {
+    const [waiver] = generated.splice(waiverIdx, 1);
+    generated.push(waiver);
   }
+
+  // Map single-content output -> 3-column DB shape with empty bridge/ui.
+  // Translations are filled lazily by POST /api/contract/:id/translate.
+  const sections: ContractSection[] = generated.map((s) => ({
+    id: s.id,
+    content_legal: s.content,
+    content_bridge: "",
+    content_ui: "",
+  }));
 
   return {
     document: { metadata: validated.data.metadata, sections },
@@ -356,11 +369,7 @@ export interface EditInput {
 export async function editContractSection(input: EditInput): Promise<EditResult> {
   const [constraints, glossary] = await Promise.all([
     fetchConstraints(input.prisma, input.jurisdiction, input.type, input.jurisdictionLanguage),
-    fetchGlossary(input.prisma, input.jurisdiction, [
-      input.jurisdictionLanguage,
-      input.bridgeLanguage,
-      input.uiLanguage,
-    ]),
+    fetchGlossary(input.prisma, input.jurisdiction, [input.jurisdictionLanguage]),
   ]);
 
   const userPrompt = buildEditPrompt({
@@ -395,21 +404,90 @@ export async function editContractSection(input: EditInput): Promise<EditResult>
     );
   }
 
-  // Force the id to match what the caller asked to edit; the model
-  // occasionally rewrites it.
   if (parsed && typeof parsed === "object") {
     (parsed as Record<string, unknown>).id = input.sectionId;
   }
 
-  const validated = ContractSectionSchema.safeParse(parsed);
+  const validated = GeneratedSectionSchema.safeParse(parsed);
   if (!validated.success) {
+    throw new Error(`Edit output failed validation: ${validated.error.message}`);
+  }
+
+  // Editing the legal content invalidates any prior translations of this
+  // section — caller should clear content_bridge/content_ui to force
+  // re-translation.
+  return {
+    section: {
+      id: validated.data.id,
+      content_legal: validated.data.content,
+      content_bridge: "",
+      content_ui: "",
+    },
+    usage: extractUsage(res, durationMs),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Translate — render an existing legal clause into bridge or ui language
+// ---------------------------------------------------------------------------
+
+export interface TranslateInput {
+  jurisdiction: string;
+  sectionId: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  sourceContent: string;
+  prisma: PrismaClient;
+}
+
+export interface TranslateResult {
+  sectionId: string;
+  content: string;
+  usage: UsageInfo;
+}
+
+export async function translateSection(input: TranslateInput): Promise<TranslateResult> {
+  const glossary = await fetchGlossary(input.prisma, input.jurisdiction, [input.targetLanguage]);
+
+  const userPrompt = buildTranslatePrompt({
+    sectionId: input.sectionId,
+    sourceLanguage: input.sourceLanguage,
+    targetLanguage: input.targetLanguage,
+    sourceContent: input.sourceContent,
+    glossary,
+  });
+
+  const startedAt = Date.now();
+  const res = await jsonModel.invoke([
+    new SystemMessage(SYSTEM_TRANSLATE_SECTION),
+    new HumanMessage(userPrompt),
+  ]);
+  const durationMs = Date.now() - startedAt;
+
+  const raw = messageContentToString(res.content);
+  const cleaned = stripJsonFences(raw);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (e) {
     throw new Error(
-      `Edit output failed validation: ${validated.error.message}`,
+      `Translator returned non-JSON: ${(e as Error).message}\n--- raw ---\n${raw.slice(0, 300)}`,
     );
   }
 
+  if (parsed && typeof parsed === "object") {
+    (parsed as Record<string, unknown>).id = input.sectionId;
+  }
+
+  const validated = GeneratedSectionSchema.safeParse(parsed);
+  if (!validated.success) {
+    throw new Error(`Translation failed validation: ${validated.error.message}`);
+  }
+
   return {
-    section: validated.data,
+    sectionId: validated.data.id,
+    content: validated.data.content,
     usage: extractUsage(res, durationMs),
   };
 }
