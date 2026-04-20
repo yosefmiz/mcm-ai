@@ -11,6 +11,7 @@ import {
   type UsageInfo,
 } from "@/lib/ai";
 import { computeCostUsd } from "@/lib/usage";
+import { findCanonicalTemplate, assembleFromCanonical } from "@/lib/canonical";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -68,22 +69,43 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // ---- generate_contract intent: invoke the full pipeline ----
   if (route.intent === "generate_contract") {
     const ip = clientIp(req);
+    // Try the canonical template path first — instant, no LLM call.
     let docResult;
-    try {
-      docResult = await generateInitialContract({
+    let usedCanonical = false;
+    const canonical = await findCanonicalTemplate(prisma, {
+      jurisdiction: route.params.jurisdiction,
+      type: route.params.type,
+      jurisdictionLanguage: route.params.jurisdictionLanguage,
+    });
+
+    if (canonical) {
+      const assembled = assembleFromCanonical({
+        template: canonical,
         jurisdiction: route.params.jurisdiction,
         jurisdictionLanguage: route.params.jurisdictionLanguage,
         type: route.params.type,
         inputs: route.params.inputs,
-        prisma,
       });
-    } catch (e) {
-      await logChat("GENERATE", emptyUsage(), "ERROR", (e as Error).message, null);
-      return NextResponse.json(
-        { error: "Generation failed", detail: (e as Error).message },
-        { status: 502 },
-      );
+      docResult = { document: assembled.document, usage: assembled.usage };
+      usedCanonical = true;
+    } else {
+      try {
+        docResult = await generateInitialContract({
+          jurisdiction: route.params.jurisdiction,
+          jurisdictionLanguage: route.params.jurisdictionLanguage,
+          type: route.params.type,
+          inputs: route.params.inputs,
+          prisma,
+        });
+      } catch (e) {
+        await logChat("GENERATE", emptyUsage(), "ERROR", (e as Error).message, null);
+        return NextResponse.json(
+          { error: "Generation failed", detail: (e as Error).message },
+          { status: 502 },
+        );
+      }
     }
+    void usedCanonical; // surfaced via reply text below
 
     const saved = await prisma.contract.create({
       data: {
