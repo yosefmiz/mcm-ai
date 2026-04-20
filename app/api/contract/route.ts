@@ -6,19 +6,43 @@ import {
   GenerateRequestSchema,
   EditRequestSchema,
   ContractDocumentSchema,
-  type ContractDocument,
   type ContractSection,
 } from "@/lib/schemas";
 import {
   generateInitialContract,
   editContractSection,
+  type UsageInfo,
 } from "@/lib/ai";
+import { computeCostUsd } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // ---------------------------------------------------------------------------
-// POST /api/contract — initial generation
+// GET — list recent contracts
+// ---------------------------------------------------------------------------
+
+export async function GET(req: NextRequest): Promise<NextResponse> {
+  const url = new URL(req.url);
+  const take = Math.min(Number(url.searchParams.get("take") ?? 50), 200);
+
+  const contracts = await prisma.contract.findMany({
+    orderBy: { createdAt: "desc" },
+    take,
+    select: {
+      id: true,
+      jurisdiction: true,
+      language: true,
+      type: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  return NextResponse.json({ contracts });
+}
+
+// ---------------------------------------------------------------------------
+// POST — initial generation
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -32,9 +56,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
   const { jurisdiction, language, type, inputs } = parsed.data;
 
-  let doc: ContractDocument;
+  let docResult;
   try {
-    doc = await generateInitialContract({
+    docResult = await generateInitialContract({
       jurisdiction,
       language,
       type,
@@ -42,6 +66,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       prisma,
     });
   } catch (e) {
+    await logUsage({
+      operation: "GENERATE",
+      jurisdiction,
+      language,
+      type,
+      sectionId: null,
+      contractId: null,
+      usage: emptyUsage(),
+      status: "ERROR",
+      error: (e as Error).message,
+    });
     return NextResponse.json(
       { error: "Generation failed", detail: (e as Error).message },
       { status: 502 },
@@ -53,21 +88,37 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       jurisdiction,
       language,
       type,
-      metadata: doc.metadata as unknown as Prisma.InputJsonValue,
-      sections: doc.sections as unknown as Prisma.InputJsonValue,
+      metadata: docResult.document.metadata as unknown as Prisma.InputJsonValue,
+      sections: docResult.document.sections as unknown as Prisma.InputJsonValue,
     },
     select: { id: true, createdAt: true },
   });
 
+  await logUsage({
+    operation: "GENERATE",
+    jurisdiction,
+    language,
+    type,
+    sectionId: null,
+    contractId: saved.id,
+    usage: docResult.usage,
+    status: "OK",
+    error: null,
+  });
+
   return NextResponse.json(
-    { id: saved.id, createdAt: saved.createdAt, document: doc },
+    {
+      id: saved.id,
+      createdAt: saved.createdAt,
+      document: docResult.document,
+      usage: { ...docResult.usage, costUsd: computeCostUsd(docResult.usage.inputTokens, docResult.usage.outputTokens) },
+    },
     { status: 201 },
   );
 }
 
 // ---------------------------------------------------------------------------
-// PATCH /api/contract — partial section edit
-// Body: { contractId, sectionId, userInstruction }
+// PATCH — partial section edit
 // ---------------------------------------------------------------------------
 
 export async function PATCH(req: NextRequest): Promise<NextResponse> {
@@ -103,9 +154,9 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
-  let newContent: string;
+  let editResult;
   try {
-    newContent = await editContractSection({
+    editResult = await editContractSection({
       jurisdiction: contract.jurisdiction,
       language: contract.language,
       type: contract.type,
@@ -115,6 +166,17 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
       prisma,
     });
   } catch (e) {
+    await logUsage({
+      operation: "EDIT",
+      jurisdiction: contract.jurisdiction,
+      language: contract.language,
+      type: contract.type,
+      sectionId,
+      contractId,
+      usage: emptyUsage(),
+      status: "ERROR",
+      error: (e as Error).message,
+    });
     return NextResponse.json(
       { error: "Edit failed", detail: (e as Error).message },
       { status: 502 },
@@ -122,7 +184,7 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
   }
 
   const updatedSections: ContractSection[] = sections.map((s) =>
-    s.id === sectionId ? { ...s, content: newContent } : s,
+    s.id === sectionId ? { ...s, content: editResult.content } : s,
   );
 
   const updated = await prisma.contract.update({
@@ -133,9 +195,72 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     select: { id: true, updatedAt: true },
   });
 
+  await logUsage({
+    operation: "EDIT",
+    jurisdiction: contract.jurisdiction,
+    language: contract.language,
+    type: contract.type,
+    sectionId,
+    contractId,
+    usage: editResult.usage,
+    status: "OK",
+    error: null,
+  });
+
   return NextResponse.json({
     id: updated.id,
     updatedAt: updated.updatedAt,
-    section: { id: sectionId, title: target.title, content: newContent },
+    section: { id: sectionId, title: target.title, content: editResult.content },
+    usage: { ...editResult.usage, costUsd: computeCostUsd(editResult.usage.inputTokens, editResult.usage.outputTokens) },
   });
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
+
+function emptyUsage(): UsageInfo {
+  return {
+    model: process.env.OLLAMA_MODEL ?? "gemma4",
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    durationMs: 0,
+  };
+}
+
+async function logUsage(args: {
+  operation: "GENERATE" | "EDIT";
+  jurisdiction: string;
+  language: "HE" | "EN" | "RU" | "AR";
+  type: "ANNUAL" | "SUBLET" | "MANAGEMENT";
+  sectionId: string | null;
+  contractId: string | null;
+  usage: UsageInfo;
+  status: "OK" | "ERROR";
+  error: string | null;
+}): Promise<void> {
+  const cost = computeCostUsd(args.usage.inputTokens, args.usage.outputTokens);
+  try {
+    await prisma.usageLog.create({
+      data: {
+        operation: args.operation,
+        jurisdiction: args.jurisdiction,
+        language: args.language,
+        type: args.type,
+        sectionId: args.sectionId,
+        contractId: args.contractId,
+        model: args.usage.model,
+        inputTokens: args.usage.inputTokens,
+        outputTokens: args.usage.outputTokens,
+        totalTokens: args.usage.totalTokens,
+        durationMs: args.usage.durationMs,
+        costUsd: new Prisma.Decimal(cost.toFixed(6)),
+        status: args.status,
+        error: args.error,
+      },
+    });
+  } catch {
+    // logging is best-effort; never fail the user request because the log failed
+  }
 }

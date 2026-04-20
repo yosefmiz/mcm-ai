@@ -1,6 +1,6 @@
 import { ChatOllama } from "@langchain/ollama";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-import type { MessageContent } from "@langchain/core/messages";
+import type { AIMessage, MessageContent } from "@langchain/core/messages";
 import type { PrismaClient, ContractType, Language } from "@prisma/client";
 
 import {
@@ -18,7 +18,6 @@ import {
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "gemma4";
 
-// JSON-mode model: Ollama enforces valid JSON output via `format: "json"`.
 const jsonModel = new ChatOllama({
   baseUrl: OLLAMA_URL,
   model: OLLAMA_MODEL,
@@ -26,12 +25,33 @@ const jsonModel = new ChatOllama({
   format: "json",
 });
 
-// Plain-text model: surgical edits return a clause body, not JSON.
 const textModel = new ChatOllama({
   baseUrl: OLLAMA_URL,
   model: OLLAMA_MODEL,
   temperature: 0.15,
 });
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface UsageInfo {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  durationMs: number;
+}
+
+export interface GenerationResult {
+  document: ContractDocument;
+  usage: UsageInfo;
+}
+
+export interface EditResult {
+  content: string;
+  usage: UsageInfo;
+}
 
 // ---------------------------------------------------------------------------
 // Constraint loader
@@ -58,7 +78,7 @@ export async function fetchConstraints(
 }
 
 // ---------------------------------------------------------------------------
-// Public API
+// Generate
 // ---------------------------------------------------------------------------
 
 export interface GenerateInput {
@@ -71,7 +91,7 @@ export interface GenerateInput {
 
 export async function generateInitialContract(
   input: GenerateInput,
-): Promise<ContractDocument> {
+): Promise<GenerationResult> {
   const constraints = await fetchConstraints(
     input.prisma,
     input.jurisdiction,
@@ -87,10 +107,12 @@ export async function generateInitialContract(
     constraints,
   });
 
+  const startedAt = Date.now();
   const res = await jsonModel.invoke([
     new SystemMessage(SYSTEM_GENERATE),
     new HumanMessage(userPrompt),
   ]);
+  const durationMs = Date.now() - startedAt;
 
   const raw = messageContentToString(res.content);
 
@@ -103,7 +125,6 @@ export async function generateInitialContract(
     );
   }
 
-  // Force metadata coherence with the request — the model can drift on locale strings.
   if (
     parsed &&
     typeof parsed === "object" &&
@@ -124,8 +145,16 @@ export async function generateInitialContract(
       `Model output failed schema validation: ${validated.error.message}`,
     );
   }
-  return validated.data;
+
+  return {
+    document: validated.data,
+    usage: extractUsage(res, durationMs),
+  };
 }
+
+// ---------------------------------------------------------------------------
+// Edit
+// ---------------------------------------------------------------------------
 
 export interface EditInput {
   jurisdiction: string;
@@ -137,7 +166,7 @@ export interface EditInput {
   prisma: PrismaClient;
 }
 
-export async function editContractSection(input: EditInput): Promise<string> {
+export async function editContractSection(input: EditInput): Promise<EditResult> {
   const constraints = await fetchConstraints(
     input.prisma,
     input.jurisdiction,
@@ -154,10 +183,12 @@ export async function editContractSection(input: EditInput): Promise<string> {
     constraints,
   });
 
+  const startedAt = Date.now();
   const res = await textModel.invoke([
     new SystemMessage(SYSTEM_EDIT),
     new HumanMessage(userPrompt),
   ]);
+  const durationMs = Date.now() - startedAt;
 
   const raw = messageContentToString(res.content);
   const cleaned = sanitizeEditOutput(raw);
@@ -165,7 +196,11 @@ export async function editContractSection(input: EditInput): Promise<string> {
   if (cleaned.length === 0) {
     throw new Error("Model produced an empty section after sanitization");
   }
-  return cleaned;
+
+  return {
+    content: cleaned,
+    usage: extractUsage(res, durationMs),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -185,19 +220,39 @@ function messageContentToString(content: MessageContent): string {
     .join("");
 }
 
-/**
- * Defensive cleanup: even with strong prompting, small local models occasionally
- * leak markdown fences or chatty preambles. We strip the most common forms
- * without rewriting legitimate content.
- */
+interface UsageMetadata {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+}
+
+interface ResponseMetadata {
+  prompt_eval_count?: number;
+  eval_count?: number;
+  model?: string;
+}
+
+function extractUsage(res: AIMessage, durationMs: number): UsageInfo {
+  const um = (res as AIMessage & { usage_metadata?: UsageMetadata }).usage_metadata;
+  const meta = (res as AIMessage & { response_metadata?: ResponseMetadata }).response_metadata;
+
+  const input = um?.input_tokens ?? meta?.prompt_eval_count ?? 0;
+  const output = um?.output_tokens ?? meta?.eval_count ?? 0;
+  const total = um?.total_tokens ?? input + output;
+
+  return {
+    model: meta?.model ?? OLLAMA_MODEL,
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens: total,
+    durationMs,
+  };
+}
+
 function sanitizeEditOutput(text: string): string {
   let out = text.trim();
-
-  // Strip a leading code fence (``` or ```lang) and a trailing fence.
   out = out.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, "");
   out = out.replace(/\n?```\s*$/, "");
-
-  // Strip wrapping triple-quotes the model sometimes adds.
   out = out.replace(/^"""\s*/, "").replace(/\s*"""$/, "");
 
   const chattyHeads: RegExp[] = [

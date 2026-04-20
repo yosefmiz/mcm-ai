@@ -26,6 +26,11 @@ enum Language {
   AR
 }
 
+enum Operation {
+  GENERATE
+  EDIT
+}
+
 model Contract {
   id           String       @id @default(cuid())
   jurisdiction String
@@ -38,8 +43,40 @@ model Contract {
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
+  usageLogs    UsageLog[]
+
   @@index([jurisdiction, type])
   @@index([language])
+}
+
+model UsageLog {
+  id           String       @id @default(cuid())
+
+  contractId   String?
+  contract     Contract?    @relation(fields: [contractId], references: [id], onDelete: SetNull)
+
+  operation    Operation
+  sectionId    String?
+
+  model        String
+  jurisdiction String
+  language     Language
+  type         ContractType
+
+  inputTokens  Int          @default(0)
+  outputTokens Int          @default(0)
+  totalTokens  Int          @default(0)
+  durationMs   Int          @default(0)
+  costUsd      Decimal      @default(0) @db.Decimal(12, 6)
+
+  status       String       @default("OK")
+  error        String?
+
+  createdAt    DateTime     @default(now())
+
+  @@index([contractId])
+  @@index([operation, createdAt])
+  @@index([createdAt])
 }
 
 model LegalConstraint {
