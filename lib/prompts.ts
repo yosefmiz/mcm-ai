@@ -52,12 +52,25 @@ const formatGlossary = (rows: GlossaryRow[]): string =>
         .join("\n");
 
 /**
- * Format reference templates as clearly-prose Markdown so the model does
- * not mistake their shape for the expected JSON output schema. The old
- * JSON-ish "[id] content" format caused gemma4 to emit the wrong field
- * name ("content" instead of content_legal / content_bridge / content_ui)
- * on generation, producing malformed JSON.
+ * Format reference templates as Markdown prose, with each section's content
+ * truncated to a small budget. The model uses references for STYLE and
+ * STRUCTURE, not for verbatim copying — feeding it the entire 18K-character
+ * source contract is what was tipping us into "did not receive done in
+ * stream" failures (prompt + KV cache near num_ctx limit, model drops out).
+ *
+ * Override per-section budget via TEMPLATE_SECTION_CHAR_BUDGET env var.
  */
+const TEMPLATE_SECTION_CHAR_BUDGET = Number(
+  process.env.TEMPLATE_SECTION_CHAR_BUDGET ?? 500,
+);
+
+function snipForTemplate(text: string): string {
+  const t = text.trim().replace(/\s+/g, " ");
+  return t.length <= TEMPLATE_SECTION_CHAR_BUDGET
+    ? t
+    : t.slice(0, TEMPLATE_SECTION_CHAR_BUDGET) + "…";
+}
+
 const formatTemplates = (refs: TemplateRef[]): string =>
   refs.length === 0
     ? "(none on file)"
@@ -66,8 +79,8 @@ const formatTemplates = (refs: TemplateRef[]): string =>
           (ref, i) =>
             `### Reference ${i + 1}: ${ref.title} (${ref.language})\n\n` +
             ref.sections
-              .map((s) => `**${s.title}**\n\n${s.content}`)
-              .join("\n\n---\n\n"),
+              .map((s) => `**${s.title}**\n${snipForTemplate(s.content)}`)
+              .join("\n\n"),
         )
         .join("\n\n=====\n\n");
 
