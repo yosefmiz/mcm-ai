@@ -317,6 +317,22 @@ question, and if drafting, you extract the parameters.
   rental agreement, sublet, or management agreement — even if the request
   is short and lacks details.
 - Otherwise intent="chat".
+
+<routing_examples>
+- "Draft a lease for an apartment in Brooklyn" -> generate_contract (jurisdiction "NY, US", jurisdiction_language "en", type ANNUAL)
+- "צור לי חוזה לדירה בתל אביב" -> generate_contract (jurisdiction "IL", jurisdiction_language "he", ui_language "he", type ANNUAL)
+- "צור חוזה מקצועי לשכירות שנתית" -> generate_contract (jurisdiction inferred from ui_language_hint, type ANNUAL)
+- "תנסח לי הסכם שכירות משנה לחודש" -> generate_contract (type SUBLET)
+- "הכן חוזה ניהול נכס" -> generate_contract (type MANAGEMENT)
+- "Создай договор аренды квартиры в Москве" -> generate_contract (jurisdiction "RU", jurisdiction_language "ru", type ANNUAL)
+- "أنشئ عقد إيجار شقة في دبي" -> generate_contract (jurisdiction "AE", jurisdiction_language "ar", type ANNUAL)
+- "What is a security deposit?" -> chat
+- "מה הכללים לפיקדון בישראל?" -> chat
+- "Can a landlord evict without notice?" -> chat
+- "I want to know my rights" -> chat
+</routing_examples>
+
+The phrases "צור", "תנסח", "הכן", "תכין", "תכתוב", "create", "draft", "generate", "make", "write", "prepare", "build", "produce" combined with any of "חוזה", "הסכם", "contract", "lease", "agreement", "rental", "договор", "аренда", "عقد", "إيجار" are HARD triggers for generate_contract.
 - For intent="generate_contract" you MUST fill all five language/type
   parameters with reasonable defaults inferred from the message:
     jurisdiction: a short jurisdiction code derived from any city or

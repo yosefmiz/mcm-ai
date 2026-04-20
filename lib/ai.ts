@@ -571,10 +571,69 @@ export type RouteDecision =
       usage: UsageInfo;
     };
 
+/**
+ * Hard regex pre-check: if the message clearly contains a generate-trigger
+ * verb + a contract noun in any of our four supported scripts, skip the
+ * LLM router and force generate_contract intent. Saves ~3s per request and
+ * sidesteps the model's bias toward Q&A replies in Hebrew.
+ *
+ * The verb list is intentionally small but unambiguous; ambiguous phrasing
+ * still goes through the LLM router.
+ */
+const GENERATE_TRIGGER_RE =
+  /(?:\b(?:create|draft|generate|make|write|prepare|build|produce)\b[\s\S]{0,40}\b(?:contract|lease|agreement|rental(?:\s+agreement)?|sublet)\b)|(?:\b(?:создай|составь|подготовь|напиши)\b[\s\S]{0,40}\b(?:договор|аренд))|(?:(?:צור|תנסח|תכין|הכן|תכתוב|נסח)[\s\S]{0,40}(?:חוזה|הסכם|שכירות|חוזי))|(?:(?:أنشئ|اصنع|اكتب|حضّر|أعدّ)[\s\S]{0,40}(?:عقد|إيجار|اتفاقية))/iu;
+
+function defaultsForUiLang(uiLang: string): {
+  jurisdiction: string;
+  jurisdictionLanguage: string;
+  bridgeLanguage: string;
+} {
+  const l = uiLang.toLowerCase().split("-")[0];
+  switch (l) {
+    case "he": return { jurisdiction: "IL",     jurisdictionLanguage: "he", bridgeLanguage: "en" };
+    case "ar": return { jurisdiction: "AE",     jurisdictionLanguage: "ar", bridgeLanguage: "en" };
+    case "ru": return { jurisdiction: "RU",     jurisdictionLanguage: "ru", bridgeLanguage: "en" };
+    default:   return { jurisdiction: "NY, US", jurisdictionLanguage: "en", bridgeLanguage: "en" };
+  }
+}
+
+const ZERO_USAGE: UsageInfo = {
+  model: process.env.OLLAMA_MODEL ?? "gemma4",
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  durationMs: 0,
+};
+
 export async function routeChatTurn(
   message: string,
   uiLanguageHint: string,
 ): Promise<RouteDecision> {
+  // ---- regex fast-path ----
+  if (GENERATE_TRIGGER_RE.test(message)) {
+    const def = defaultsForUiLang(uiLanguageHint);
+    const lower = message.toLowerCase();
+    const type: ContractType =
+      /(sublet|short[- ]term|субаренд|השכרת משנה|שכירות משנה|إيجار من الباطن)/i.test(lower)
+        ? "SUBLET"
+        : /(management|ניהול נכס|управлен|إدارة عقار)/i.test(lower)
+          ? "MANAGEMENT"
+          : "ANNUAL";
+    return {
+      intent: "generate_contract",
+      params: {
+        jurisdiction: def.jurisdiction,
+        jurisdictionLanguage: def.jurisdictionLanguage,
+        bridgeLanguage: def.bridgeLanguage,
+        uiLanguage: uiLanguageHint.toLowerCase().split("-")[0],
+        type,
+        inputs: {},
+      },
+      usage: ZERO_USAGE,
+    };
+  }
+
+  // ---- LLM router for ambiguous cases ----
   const prompt = buildRouteChatPrompt({ message, uiLanguageHint });
   const startedAt = Date.now();
   const res = await jsonModel.invoke([
