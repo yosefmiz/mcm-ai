@@ -30,7 +30,13 @@ import {
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "gemma4";
-const OLLAMA_CTX = Number(process.env.OLLAMA_NUM_CTX ?? 8192);
+// 16K context fits comfortably on a 10GB GPU when all layers are offloaded.
+// Full Hebrew contract output (12 sections × 3 columns) needs ~6000 tokens
+// alone, plus ~2000 tokens of prompt; 8K is too small.
+const OLLAMA_CTX = Number(process.env.OLLAMA_NUM_CTX ?? 16384);
+// Hard cap on output tokens so a runaway model doesn't fill the entire
+// context window with looped JSON.
+const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT ?? 6000);
 // 99 = "all layers on GPU". Ollama's auto-detection is conservative and
 // often leaves 30-60% of the model on CPU even when VRAM is available;
 // forcing this lets the 3080 actually do its job. Override via env if you
@@ -44,6 +50,7 @@ const jsonModel = new ChatOllama({
   format: "json",
   numCtx: OLLAMA_CTX,
   numGpu: OLLAMA_NUM_GPU,
+  numPredict: OLLAMA_NUM_PREDICT,
 });
 
 const textModel = new ChatOllama({
@@ -52,6 +59,7 @@ const textModel = new ChatOllama({
   temperature: 0.15,
   numCtx: OLLAMA_CTX,
   numGpu: OLLAMA_NUM_GPU,
+  numPredict: OLLAMA_NUM_PREDICT,
 });
 
 // ---------------------------------------------------------------------------
