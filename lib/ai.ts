@@ -30,7 +30,12 @@ import {
 
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "gemma4";
-const OLLAMA_CTX = Number(process.env.OLLAMA_NUM_CTX ?? 16384);
+const OLLAMA_CTX = Number(process.env.OLLAMA_NUM_CTX ?? 8192);
+// 99 = "all layers on GPU". Ollama's auto-detection is conservative and
+// often leaves 30-60% of the model on CPU even when VRAM is available;
+// forcing this lets the 3080 actually do its job. Override via env if you
+// run on smaller hardware.
+const OLLAMA_NUM_GPU = Number(process.env.OLLAMA_NUM_GPU ?? 99);
 
 const jsonModel = new ChatOllama({
   baseUrl: OLLAMA_URL,
@@ -38,6 +43,7 @@ const jsonModel = new ChatOllama({
   temperature: 0.2,
   format: "json",
   numCtx: OLLAMA_CTX,
+  numGpu: OLLAMA_NUM_GPU,
 });
 
 const textModel = new ChatOllama({
@@ -45,6 +51,7 @@ const textModel = new ChatOllama({
   model: OLLAMA_MODEL,
   temperature: 0.15,
   numCtx: OLLAMA_CTX,
+  numGpu: OLLAMA_NUM_GPU,
 });
 
 // ---------------------------------------------------------------------------
