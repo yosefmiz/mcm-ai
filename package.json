@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "next dev -p 3200",
     "build": "prisma generate && next build",
-    "start": "next start -p 3200",
+    "start": "next start",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:studio": "prisma studio"
