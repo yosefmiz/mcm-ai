@@ -15,10 +15,12 @@ import {
   SYSTEM_EDIT,
   SYSTEM_EXTRACT,
   SYSTEM_EXTRACT_FACTS,
+  SYSTEM_ROUTE_CHAT,
   buildGeneratePrompt,
   buildEditPrompt,
   buildExtractPrompt,
   buildExtractFactsPrompt,
+  buildRouteChatPrompt,
   type ConstraintRow,
   type GlossaryRow,
   type TemplateRef,
@@ -528,12 +530,94 @@ export async function extractFactsFromInstruction(
 }
 
 // ---------------------------------------------------------------------------
+// Chat routing — classify a user turn as chat vs generate-contract
+// ---------------------------------------------------------------------------
+
+const RouteResponseSchema = z.object({
+  intent: z.enum(["chat", "generate_contract"]),
+  generate: z
+    .object({
+      jurisdiction: z.string().min(2),
+      jurisdiction_language: z.string().min(2),
+      bridge_language: z.string().min(2),
+      ui_language: z.string().min(2),
+      type: z.enum(["ANNUAL", "SUBLET", "MANAGEMENT"]),
+      inputs: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+    })
+    .optional(),
+});
+
+export type RouteDecision =
+  | { intent: "chat"; usage: UsageInfo }
+  | {
+      intent: "generate_contract";
+      params: {
+        jurisdiction: string;
+        jurisdictionLanguage: string;
+        bridgeLanguage: string;
+        uiLanguage: string;
+        type: ContractType;
+        inputs: Record<string, unknown>;
+      };
+      usage: UsageInfo;
+    };
+
+export async function routeChatTurn(
+  message: string,
+  uiLanguageHint: string,
+): Promise<RouteDecision> {
+  const prompt = buildRouteChatPrompt({ message, uiLanguageHint });
+  const startedAt = Date.now();
+  const res = await jsonModel.invoke([
+    new SystemMessage(SYSTEM_ROUTE_CHAT),
+    new HumanMessage(prompt),
+  ]);
+  const durationMs = Date.now() - startedAt;
+  const raw = messageContentToString(res.content);
+  const cleaned = stripJsonFences(raw);
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    // Routing failure -> fall back to chat
+    return { intent: "chat", usage: extractUsage(res, durationMs) };
+  }
+
+  const validated = RouteResponseSchema.safeParse(parsed);
+  if (!validated.success) {
+    return { intent: "chat", usage: extractUsage(res, durationMs) };
+  }
+
+  if (validated.data.intent === "chat" || !validated.data.generate) {
+    return { intent: "chat", usage: extractUsage(res, durationMs) };
+  }
+
+  const g = validated.data.generate;
+  const inputs: Record<string, unknown> = {};
+  if (g.inputs) for (const [k, v] of Object.entries(g.inputs)) inputs[k] = v;
+
+  return {
+    intent: "generate_contract",
+    params: {
+      jurisdiction: g.jurisdiction,
+      jurisdictionLanguage: g.jurisdiction_language.toLowerCase(),
+      bridgeLanguage: g.bridge_language.toLowerCase(),
+      uiLanguage: g.ui_language.toLowerCase(),
+      type: g.type as ContractType,
+      inputs,
+    },
+    usage: extractUsage(res, durationMs),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Chat (free-form Q&A) — unchanged
 // ---------------------------------------------------------------------------
 
 const SYSTEM_CHAT = `You are MyHome's real-estate assistant.
 You help landlords, tenants, and managers understand rental contracts, jurisdiction-specific rules, and lease terms.
-Keep answers concise, practical, and jurisdiction-aware. If the user asks for a contract, suggest they use the Playground page (/playground) and outline what info they need to provide.
+Keep answers concise, practical, and jurisdiction-aware.
 Never invent statutes; if you are not sure of a specific rule, say so and suggest checking with a licensed attorney.
 Match the user's language (Hebrew, English, Russian, Arabic).`;
 

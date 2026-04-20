@@ -301,6 +301,78 @@ You are a legal document parser.
 </output_rules>`;
 
 // ===========================================================================
+// CHAT ROUTING — classify intent and extract contract-generation params
+// ===========================================================================
+
+export const SYSTEM_ROUTE_CHAT = `<role>
+You route a user's message in MyHome's chat. You decide whether the user is
+asking us to DRAFT a real-estate contract or just chatting / asking a
+question, and if drafting, you extract the parameters.
+</role>
+
+<output_rules>
+- Emit EXACTLY ONE JSON object matching <output_schema>. No prose, no markdown.
+- Choose intent="generate_contract" when the user asks to draft, create, write,
+  generate, prepare, build, or produce a real-estate contract, lease,
+  rental agreement, sublet, or management agreement — even if the request
+  is short and lacks details.
+- Otherwise intent="chat".
+- For intent="generate_contract" you MUST fill all five language/type
+  parameters with reasonable defaults inferred from the message:
+    jurisdiction: a short jurisdiction code derived from any city or
+      country the user named ("Tel Aviv" -> "IL", "Brooklyn" -> "NY, US",
+      "Berlin" -> "DE-BE", "Athens" -> "GR"). If nothing is named, fall
+      back to ui_language_hint (he->IL, en->"NY, US", ru->RU, ar->AE).
+    jurisdiction_language: the ISO 639-1 lowercase code that is the
+      official legal language of that jurisdiction (IL->he, NY,US->en,
+      DE-BE->de, GR->el, RU->ru, AE->ar).
+    bridge_language: ISO 639-1; default "en" unless the user clearly
+      implied another shared language for the parties.
+    ui_language: ISO 639-1; the language the user wrote their request in
+      (or ui_language_hint as a fallback).
+    type: "ANNUAL" by default; "SUBLET" if the user said sublet / short
+      term / vacation; "MANAGEMENT" if they said property management /
+      ניהול נכס.
+    inputs: any specific facts the user mentioned — landlord/tenant
+      names, address, rent amount, dates, deposit, etc. Use the
+      SCREAMING_SNAKE_CASE keys our generator expects when sensible
+      (LANDLORD_FULL_NAME, TENANT_FULL_NAME, PROPERTY_FULL_ADDRESS,
+      MONTHLY_RENT_AMOUNT, LEASE_START_DATE, LEASE_TERM_MONTHS,
+      SECURITY_DEPOSIT_AMOUNT). Use {} when nothing was supplied — the
+      generator will fill placeholders.
+- Never invent facts that the user did not say.
+</output_rules>`;
+
+export function buildRouteChatPrompt(args: {
+  message: string;
+  uiLanguageHint: string;
+}): string {
+  return `<task>route_chat_turn</task>
+
+<ui_language_hint>${args.uiLanguageHint}</ui_language_hint>
+
+<user_message>
+${args.message.replace(/]]>/g, "]]]]><![CDATA[>")}
+</user_message>
+
+<output_schema>
+{
+  "intent": "chat" | "generate_contract",
+  "generate": {
+    "jurisdiction": "<string>",
+    "jurisdiction_language": "<iso>",
+    "bridge_language": "<iso>",
+    "ui_language": "<iso>",
+    "type": "ANNUAL" | "SUBLET" | "MANAGEMENT",
+    "inputs": { "<KEY>": "<value>" }
+  }
+}
+</output_schema>
+
+If intent="chat", omit the "generate" object. Emit the JSON now.`;
+}
+
+// ===========================================================================
 // FACT EXTRACTION — natural-language instruction → structured facts map
 // ===========================================================================
 
