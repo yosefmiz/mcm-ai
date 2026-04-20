@@ -218,8 +218,6 @@ function sampleN<T>(arr: T[], n: number): T[] {
 export interface GenerateInput {
   jurisdiction: string;
   jurisdictionLanguage: string;
-  bridgeLanguage: string;
-  uiLanguage: string;
   type: ContractType;
   inputs: Record<string, unknown>;
   /**
@@ -236,19 +234,13 @@ export async function generateInitialContract(
 ): Promise<GenerationResult> {
   const [constraints, glossary, templates] = await Promise.all([
     fetchConstraints(input.prisma, input.jurisdiction, input.type, input.jurisdictionLanguage),
-    fetchGlossary(input.prisma, input.jurisdiction, [
-      input.jurisdictionLanguage,
-      input.bridgeLanguage,
-      input.uiLanguage,
-    ]),
+    fetchGlossary(input.prisma, input.jurisdiction, [input.jurisdictionLanguage]),
     fetchExemplarTemplates(input.prisma, input.jurisdiction, input.type, input.jurisdictionLanguage),
   ]);
 
   const userPrompt = buildGeneratePrompt({
     jurisdiction: input.jurisdiction,
     jurisdictionLanguage: input.jurisdictionLanguage,
-    bridgeLanguage: input.bridgeLanguage,
-    uiLanguage: input.uiLanguage,
     type: input.type,
     inputs: input.inputs,
     constraints,
@@ -274,8 +266,6 @@ export async function generateInitialContract(
     (parsed as Record<string, unknown>).metadata = {
       jurisdiction: input.jurisdiction,
       jurisdictionLanguage: input.jurisdictionLanguage,
-      bridgeLanguage: input.bridgeLanguage,
-      uiLanguage: input.uiLanguage,
       type: input.type,
     };
   }
@@ -364,8 +354,6 @@ async function invokeGenerateWithRetry(
 export interface EditInput {
   jurisdiction: string;
   jurisdictionLanguage: string;
-  bridgeLanguage: string;
-  uiLanguage: string;
   type: ContractType;
   sectionId: string;
   current: { content_legal: string; content_bridge: string; content_ui: string };
@@ -384,8 +372,6 @@ export async function editContractSection(input: EditInput): Promise<EditResult>
   const userPrompt = buildEditPrompt({
     jurisdiction: input.jurisdiction,
     jurisdictionLanguage: input.jurisdictionLanguage,
-    bridgeLanguage: input.bridgeLanguage,
-    uiLanguage: input.uiLanguage,
     type: input.type,
     sectionId: input.sectionId,
     current: input.current,

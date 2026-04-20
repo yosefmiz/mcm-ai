@@ -59,8 +59,8 @@ export const GeneratedDocumentSchema = z.object({
   metadata: z.object({
     jurisdiction: z.string().min(2),
     jurisdictionLanguage: IsoLanguageSchema,
-    bridgeLanguage: IsoLanguageSchema,
-    uiLanguage: IsoLanguageSchema,
+    bridgeLanguage: IsoLanguageSchema.nullable().optional(),
+    uiLanguage: IsoLanguageSchema.nullable().optional(),
     type: ContractTypeEnum,
   }),
   sections: z.array(GeneratedSectionSchema).min(1),
@@ -78,8 +78,11 @@ export type ContractSection = z.infer<typeof ContractSectionSchema>;
 export const ContractMetadataSchema = z.object({
   jurisdiction: z.string().min(2),
   jurisdictionLanguage: IsoLanguageSchema,
-  bridgeLanguage: IsoLanguageSchema,
-  uiLanguage: IsoLanguageSchema,
+  // Bridge / UI languages are present only when the caller requested
+  // translations on the original POST. The contract is legally bound by
+  // jurisdictionLanguage regardless.
+  bridgeLanguage: IsoLanguageSchema.nullable().optional(),
+  uiLanguage: IsoLanguageSchema.nullable().optional(),
   type: ContractTypeEnum,
 });
 
@@ -94,6 +97,18 @@ export type ContractDocument = z.infer<typeof ContractDocumentSchema>;
 // API request schemas
 // ---------------------------------------------------------------------------
 
+// Optional translation request. Each field is the ISO code of the language
+// to translate INTO, asynchronously after the primary contract is saved.
+// Either or both may be present.
+export const TranslateToSchema = z
+  .object({
+    bridge: IsoLanguageSchema.optional(),
+    ui: IsoLanguageSchema.optional(),
+  })
+  .refine((d) => !!d.bridge || !!d.ui, {
+    message: "translateTo must include at least one of 'bridge' or 'ui'",
+  });
+
 export const GenerateRequestSchema = z
   .object({
     // Stateful path: pull facts from CRM entities. Any combination of these
@@ -102,11 +117,12 @@ export const GenerateRequestSchema = z
     tenantId: z.string().min(1).optional(),
     dealId: z.string().min(1).optional(),
 
-    // Required language metadata — independent of the entity layer because
-    // a single deal may be drafted under different jurisdictions/languages.
+    // The language the legal contract is written in — required.
     jurisdictionLanguage: IsoLanguageSchema,
-    bridgeLanguage: IsoLanguageSchema,
-    uiLanguage: IsoLanguageSchema,
+
+    // Optional async translations to perform in the background after
+    // returning the primary contract.
+    translateTo: TranslateToSchema.optional(),
 
     // Stateless overrides. When entity IDs are not provided, jurisdiction +
     // type fall back to these. Inputs is a free-form key/value bag for
@@ -129,6 +145,8 @@ export const GenerateRequestSchema = z
         "Provide CRM ids (dealId / propertyId / tenantId) or stateless jurisdiction + type",
     },
   );
+
+export type TranslateTo = z.infer<typeof TranslateToSchema>;
 
 export const EditRequestSchema = z.object({
   contractId: z.string().min(1),

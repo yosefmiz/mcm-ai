@@ -73,8 +73,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       docResult = await generateInitialContract({
         jurisdiction: route.params.jurisdiction,
         jurisdictionLanguage: route.params.jurisdictionLanguage,
-        bridgeLanguage: route.params.bridgeLanguage,
-        uiLanguage: route.params.uiLanguage,
         type: route.params.type,
         inputs: route.params.inputs,
         prisma,
@@ -91,8 +89,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       data: {
         jurisdiction: route.params.jurisdiction,
         jurisdictionLanguage: route.params.jurisdictionLanguage,
-        bridgeLanguage: route.params.bridgeLanguage,
-        uiLanguage: route.params.uiLanguage,
+        // Chat-initiated drafts produce primary only — no translateTo.
+        bridgeLanguage: null,
+        uiLanguage: null,
         type: route.params.type,
         metadata: docResult.document.metadata as unknown as Prisma.InputJsonValue,
         sections: docResult.document.sections as unknown as Prisma.InputJsonValue,

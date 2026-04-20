@@ -52,6 +52,14 @@ export async function POST(
   const sections = sectionsParse.data;
 
   const targetLanguage = target === "bridge" ? contract.bridgeLanguage : contract.uiLanguage;
+  if (!targetLanguage) {
+    return NextResponse.json(
+      {
+        error: `Contract has no ${target} language stamped — pass it on the original POST under translateTo.${target}`,
+      },
+      { status: 400 },
+    );
+  }
   const sourceLanguage = contract.jurisdictionLanguage;
   const targetField: keyof ContractSection = target === "bridge" ? "content_bridge" : "content_ui";
 

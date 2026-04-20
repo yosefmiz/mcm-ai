@@ -139,8 +139,6 @@ Translation into other languages is performed later by a separate step.
 export interface BuildGenerateArgs {
   jurisdiction: string;
   jurisdictionLanguage: string;
-  bridgeLanguage: string;
-  uiLanguage: string;
   type: ContractType;
   inputs: Record<string, unknown>;
   constraints: ConstraintRow[];
@@ -156,8 +154,6 @@ export function buildGeneratePrompt(args: BuildGenerateArgs): string {
 <jurisdiction>${args.jurisdiction}</jurisdiction>
 <contract_type>${args.type}</contract_type>
 <jurisdiction_language>${args.jurisdictionLanguage}</jurisdiction_language>
-<bridge_language>${args.bridgeLanguage}</bridge_language>
-<ui_language>${args.uiLanguage}</ui_language>
 
 <deal_facts>
 ${cdata(args.dealFacts && args.dealFacts.trim().length > 0 ? args.dealFacts : "(no CRM entities resolved — rely on <inputs> only)")}
@@ -209,8 +205,6 @@ Its content (in ${args.jurisdictionLanguage}, native legal register) MUST explic
   "metadata": {
     "jurisdiction": "${args.jurisdiction}",
     "jurisdictionLanguage": "${args.jurisdictionLanguage}",
-    "bridgeLanguage": "${args.bridgeLanguage}",
-    "uiLanguage": "${args.uiLanguage}",
     "type": "${args.type}"
   },
   "sections": [
@@ -267,8 +261,6 @@ Translation to other languages is performed later by a separate step.
 export interface BuildEditArgs {
   jurisdiction: string;
   jurisdictionLanguage: string;
-  bridgeLanguage: string;
-  uiLanguage: string;
   type: ContractType;
   sectionId: string;
   current: { content_legal: string; content_bridge: string; content_ui: string };
@@ -284,8 +276,6 @@ export function buildEditPrompt(args: BuildEditArgs): string {
 <jurisdiction>${args.jurisdiction}</jurisdiction>
 <contract_type>${args.type}</contract_type>
 <jurisdiction_language>${args.jurisdictionLanguage}</jurisdiction_language>
-<bridge_language>${args.bridgeLanguage}</bridge_language>
-<ui_language>${args.uiLanguage}</ui_language>
 
 <section_id>${args.sectionId}</section_id>
 

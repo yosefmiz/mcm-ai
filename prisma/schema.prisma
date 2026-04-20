@@ -44,8 +44,13 @@ model Contract {
   type         ContractType
 
   jurisdictionLanguage String
-  bridgeLanguage       String
-  uiLanguage           String
+  // bridge / ui languages are optional. They are only set when the caller
+  // requested translations via translateTo on the POST. Their presence does
+  // NOT imply the translations are populated yet — the corresponding
+  // sections.content_bridge / content_ui fields may still be "" while the
+  // background translation is running.
+  bridgeLanguage       String?
+  uiLanguage           String?
 
   metadata     Json
   sections     Json

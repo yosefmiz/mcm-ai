@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { after } from "next/server";
 import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
@@ -8,10 +9,12 @@ import {
   AcceptRequestSchema,
   ContractDocumentSchema,
   type ContractSection,
+  type TranslateTo,
 } from "@/lib/schemas";
 import {
   generateInitialContract,
   editContractSection,
+  translateSection,
   type UsageInfo,
 } from "@/lib/ai";
 import { computeCostUsd } from "@/lib/usage";
@@ -64,7 +67,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 }
 
 // ---------------------------------------------------------------------------
-// POST — Holy-Trinity generation, stateful (CRM-anchored) or stateless
+// POST — generate primary contract immediately, fire async translations
+// Body: {
+//   jurisdictionLanguage,
+//   translateTo?: { bridge?: string, ui?: string },
+//   propertyId?, tenantId?, dealId?,
+//   jurisdiction?, type?, inputs?,
+//   acceptedByUserId?
+// }
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
@@ -79,17 +89,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const data = parsed.data;
   const ip = clientIp(req);
 
-  // ---- Resolve deal facts from CRM if any IDs were provided ----
   const ctx = await fetchAndSerializeDealContext(prisma, {
     propertyId: data.propertyId,
     tenantId: data.tenantId,
     dealId: data.dealId,
   });
 
-  // Prefer CRM-derived jurisdiction + type when available, else the
-  // explicit fields from the request.
-  const jurisdiction =
-    ctx.property?.jurisdiction ?? data.jurisdiction ?? null;
+  const jurisdiction = ctx.property?.jurisdiction ?? data.jurisdiction ?? null;
   const type = ctx.deal?.contractType ?? data.type ?? null;
   if (!jurisdiction || !type) {
     return NextResponse.json(
@@ -101,9 +107,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // Inputs: start from the request's free-form bag, allow CRM-resolved
-  // entities to seed convenient values (the model will still rely primarily
-  // on the structured deal_facts block).
   const inputs: Record<string, unknown> = { ...(data.inputs ?? {}) };
 
   let docResult;
@@ -111,8 +114,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     docResult = await generateInitialContract({
       jurisdiction,
       jurisdictionLanguage: data.jurisdictionLanguage,
-      bridgeLanguage: data.bridgeLanguage,
-      uiLanguage: data.uiLanguage,
       type,
       inputs,
       dealFacts: ctx.factSheet,
@@ -140,8 +141,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     data: {
       jurisdiction,
       jurisdictionLanguage: data.jurisdictionLanguage,
-      bridgeLanguage: data.bridgeLanguage,
-      uiLanguage: data.uiLanguage,
+      // Stamp these only when the caller asked for translations — they
+      // describe the LANGUAGES the bridge/ui translations will be in,
+      // even before those columns are populated.
+      bridgeLanguage: data.translateTo?.bridge ?? null,
+      uiLanguage: data.translateTo?.ui ?? null,
       type,
       metadata: docResult.document.metadata as unknown as Prisma.InputJsonValue,
       sections: docResult.document.sections as unknown as Prisma.InputJsonValue,
@@ -165,6 +169,35 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     error: null,
   });
 
+  // ---- fire-and-return: schedule async translations via next/server after() ----
+  // Runs after the response is sent to the client. On Vercel this uses the
+  // platform's continuation; on Node.js (Render) it's just a deferred Promise.
+  if (data.translateTo) {
+    const translatePlan: TranslateTo = data.translateTo;
+    after(async () => {
+      try {
+        await translateContractInBackground({
+          contractId: saved.id,
+          sourceLanguage: data.jurisdictionLanguage,
+          translateTo: translatePlan,
+          jurisdiction,
+        });
+      } catch (e) {
+        await logUsage({
+          operation: "EDIT",
+          jurisdiction,
+          languageEnum: isoToEnum(data.jurisdictionLanguage) ?? "EN",
+          type,
+          sectionId: "background_translate",
+          contractId: saved.id,
+          usage: emptyUsage(),
+          status: "ERROR",
+          error: (e as Error).message,
+        });
+      }
+    });
+  }
+
   return NextResponse.json(
     {
       id: saved.id,
@@ -172,6 +205,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       document: docResult.document,
       dealFacts: ctx.factSheet,
       missing: ctx.missing,
+      // Surface to the client whether async work is in flight; they can
+      // poll GET /api/contract/:id and watch for content_bridge / content_ui
+      // becoming non-empty.
+      translationsPending: data.translateTo
+        ? Object.entries(data.translateTo)
+            .filter(([, v]) => !!v)
+            .map(([k]) => k)
+        : [],
       usage: {
         ...docResult.usage,
         costUsd: computeCostUsd(docResult.usage.inputTokens, docResult.usage.outputTokens),
@@ -179,6 +220,110 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     },
     { status: 201 },
   );
+}
+
+// ---------------------------------------------------------------------------
+// Background translation worker (called from after(), not by HTTP)
+// ---------------------------------------------------------------------------
+
+async function translateContractInBackground(args: {
+  contractId: string;
+  sourceLanguage: string;
+  translateTo: TranslateTo;
+  jurisdiction: string;
+}): Promise<void> {
+  for (const target of ["bridge", "ui"] as const) {
+    const targetLanguage = args.translateTo[target];
+    if (!targetLanguage) continue;
+    await translateAllSectionsToTarget({
+      contractId: args.contractId,
+      sourceLanguage: args.sourceLanguage,
+      target,
+      targetLanguage,
+      jurisdiction: args.jurisdiction,
+    });
+  }
+}
+
+async function translateAllSectionsToTarget(args: {
+  contractId: string;
+  sourceLanguage: string;
+  target: "bridge" | "ui";
+  targetLanguage: string;
+  jurisdiction: string;
+}): Promise<void> {
+  const contract = await prisma.contract.findUnique({
+    where: { id: args.contractId },
+  });
+  if (!contract) return;
+
+  const sectionsParse = ContractDocumentSchema.shape.sections.safeParse(contract.sections);
+  if (!sectionsParse.success) return;
+
+  const sections = sectionsParse.data;
+  const targetField: keyof ContractSection =
+    args.target === "bridge" ? "content_bridge" : "content_ui";
+
+  const updated: ContractSection[] = sections.slice();
+  let totalUsage: UsageInfo = emptyUsage();
+
+  for (const s of sections) {
+    if (s[targetField] !== "") continue; // already translated
+    try {
+      const out = await translateSection({
+        jurisdiction: args.jurisdiction,
+        sectionId: s.id,
+        sourceLanguage: args.sourceLanguage,
+        targetLanguage: args.targetLanguage,
+        sourceContent: s.content_legal,
+        prisma,
+      });
+      const idx = updated.findIndex((u) => u.id === s.id);
+      if (idx !== -1) {
+        updated[idx] = { ...updated[idx], [targetField]: out.content };
+        // Save incrementally so a poller can see partial progress.
+        await prisma.contract.update({
+          where: { id: args.contractId },
+          data: { sections: updated as unknown as Prisma.InputJsonValue },
+        });
+      }
+      totalUsage = sumUsage(totalUsage, out.usage);
+    } catch (e) {
+      await logUsage({
+        operation: "EDIT",
+        jurisdiction: args.jurisdiction,
+        languageEnum: isoToEnum(args.targetLanguage) ?? "EN",
+        type: contract.type,
+        sectionId: `${args.target}:${s.id}`,
+        contractId: args.contractId,
+        usage: emptyUsage(),
+        status: "ERROR",
+        error: (e as Error).message,
+      });
+    }
+  }
+
+  await logUsage({
+    operation: "EDIT",
+    jurisdiction: args.jurisdiction,
+    languageEnum: isoToEnum(args.targetLanguage) ?? "EN",
+    type: contract.type,
+    sectionId: `bg_translate:${args.target}`,
+    contractId: args.contractId,
+    usage: totalUsage,
+    status: "OK",
+    error: null,
+  });
+}
+
+function sumUsage(a: UsageInfo, b: UsageInfo): UsageInfo {
+  return {
+    model: b.model || a.model,
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+    durationMs: a.durationMs + b.durationMs,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -215,9 +360,6 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Section not found" }, { status: 404 });
   }
 
-  // Re-fetch deal context so the edit prompt has the same ground truth as
-  // the original generation. The contract may not be linked to a deal
-  // (chat-initiated drafts don't link); in that case factSheet is empty.
   const ctx = contract.dealId
     ? await fetchAndSerializeDealContext(prisma, { dealId: contract.dealId })
     : { factSheet: "" };
@@ -227,8 +369,6 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     editResult = await editContractSection({
       jurisdiction: contract.jurisdiction,
       jurisdictionLanguage: contract.jurisdictionLanguage,
-      bridgeLanguage: contract.bridgeLanguage,
-      uiLanguage: contract.uiLanguage,
       type: contract.type,
       sectionId,
       current: {
@@ -286,10 +426,42 @@ export async function PATCH(req: NextRequest): Promise<NextResponse> {
     error: null,
   });
 
+  // If the contract had translations and the user edited a section, the
+  // bridge/ui versions of THAT section are now stale (cleared by the AI
+  // result). Auto re-translate them in the background.
+  if (contract.bridgeLanguage || contract.uiLanguage) {
+    const sourceLang = contract.jurisdictionLanguage;
+    const bridgeLang = contract.bridgeLanguage;
+    const uiLang = contract.uiLanguage;
+    const jurisdictionStr = contract.jurisdiction;
+
+    after(async () => {
+      try {
+        for (const target of ["bridge", "ui"] as const) {
+          const targetLang = target === "bridge" ? bridgeLang : uiLang;
+          if (!targetLang) continue;
+          await translateAllSectionsToTarget({
+            contractId,
+            sourceLanguage: sourceLang,
+            target,
+            targetLanguage: targetLang,
+            jurisdiction: jurisdictionStr,
+          });
+        }
+      } catch {
+        /* logged inside */
+      }
+    });
+  }
+
   return NextResponse.json({
     id: updated.id,
     updatedAt: updated.updatedAt,
     section: editResult.section,
+    translationsPending: [
+      contract.bridgeLanguage ? "bridge" : null,
+      contract.uiLanguage ? "ui" : null,
+    ].filter((x): x is string => !!x),
     usage: {
       ...editResult.usage,
       costUsd: computeCostUsd(editResult.usage.inputTokens, editResult.usage.outputTokens),
